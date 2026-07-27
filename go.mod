@@ -1,4 +1,4 @@
-module github.com/capcom6/go-project-template
+module github.com/android-sms-gateway/at-gateway
 
 go 1.25.7
 

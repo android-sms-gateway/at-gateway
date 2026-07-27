@@ -11,8 +11,8 @@ const docTemplate = `{
         "title": "{{.Title}}",
         "contact": {
             "name": "API Support",
-            "url": "https://github.com/capcom6",
-            "email": "i@capcom.me"
+            "url": "https://github.com/android-sms-gateway/at-gateway",
+            "email": "support@sms-gate.app"
         },
         "license": {
             "name": "Apache 2.0",
@@ -138,8 +138,8 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "localhost:3000",
 	BasePath:         "/api/v1",
 	Schemes:          []string{},
-	Title:            "Project API",
-	Description:      "Project API documentation",
+	Title:            "AT Gateway API",
+	Description:      "SMS Gateway daemon using AT-command modems",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",
