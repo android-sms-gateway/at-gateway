@@ -1,11 +1,9 @@
 package config
 
 import (
-	"github.com/android-sms-gateway/at-gateway/internal/example"
+	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/openapi"
-	"github.com/go-core-fx/sqlfx"
-	"github.com/go-core-fx/telegofx"
 	"go.uber.org/fx"
 )
 
@@ -28,24 +26,13 @@ func Module() fx.Option {
 					PublicPath: cfg.HTTP.OpenAPI.PublicPath,
 				}
 			},
-			func(cfg Config) telegofx.Config {
-				return telegofx.Config{
-					Token: cfg.Telegram.Token,
-				}
-			},
-			func(cfg Config) sqlfx.Config {
-				return sqlfx.Config{
-					URL:             cfg.Database.URL,
-					ConnMaxIdleTime: cfg.Database.ConnMaxIdleTime,
-					ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
-					MaxOpenConns:    cfg.Database.MaxOpenConns,
-					MaxIdleConns:    cfg.Database.MaxIdleConns,
-				}
-			},
 		),
-		fx.Provide(func(cfg Config) example.Config {
-			return example.Config{
-				Example: cfg.Example.Example,
+		fx.Provide(func(cfg Config) modem.Config {
+			return modem.Config{
+				Port:           cfg.Modem.Port,
+				BaudRate:       cfg.Modem.BaudRate,
+				InitTimeout:    cfg.Modem.InitTimeout,
+				CommandTimeout: cfg.Modem.CommandTimeout,
 			}
 		}),
 	)

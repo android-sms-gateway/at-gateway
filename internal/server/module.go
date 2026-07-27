@@ -2,7 +2,6 @@ package server
 
 import (
 	"github.com/android-sms-gateway/at-gateway/internal/server/docs"
-	"github.com/android-sms-gateway/at-gateway/internal/server/handlers/example"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/handler"
 	"github.com/go-core-fx/fiberfx/health"
@@ -33,10 +32,10 @@ func Module() fx.Option {
 			fx.Private,
 		),
 
-		fx.Provide(
-			fx.Annotate(example.New, fx.ResultTags(`group:"handlers"`)),
-			fx.Private,
-		),
+		// fx.Provide(
+		// 	fx.Annotate(example.New, fx.ResultTags(`group:"handlers"`)),
+		// 	fx.Private,
+		// ),
 
 		fx.Invoke(
 			fx.Annotate(

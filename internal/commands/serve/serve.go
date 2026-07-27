@@ -4,18 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/android-sms-gateway/at-gateway/internal/bot"
 	"github.com/android-sms-gateway/at-gateway/internal/config"
-	"github.com/android-sms-gateway/at-gateway/internal/db"
-	"github.com/android-sms-gateway/at-gateway/internal/example"
 	"github.com/android-sms-gateway/at-gateway/internal/server"
-	"github.com/go-core-fx/bunfx"
 	"github.com/go-core-fx/fiberfx"
-	"github.com/go-core-fx/goosefx"
 	"github.com/go-core-fx/healthfx"
 	"github.com/go-core-fx/logger"
-	"github.com/go-core-fx/sqlfx"
-	"github.com/go-core-fx/telegofx"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -25,7 +18,7 @@ import (
 func Command(version healthfx.Version) *cli.Command {
 	return &cli.Command{
 		Name:  "serve",
-		Usage: "Start the HTTP server, Telegram bot, and all services",
+		Usage: "Start the HTTP server and modem service",
 		Action: func(ctx context.Context, _ *cli.Command) error {
 			return run(ctx, version)
 		},
@@ -38,31 +31,28 @@ func run(ctx context.Context, version healthfx.Version) error {
 		logger.Module(),
 		logger.WithFxDefaultLogger(),
 		// badgerfx.Module(),
-		bunfx.Module(),
+		// bunfx.Module(),
 		// cachefx.Module(),
 		fiberfx.Module(),
 		// gocqlfx.Module(),
 		// gocqlxfx.Module(),
-		sqlfx.Module(),
-		goosefx.Module(),
+		// sqlfx.Module(),
+		// goosefx.Module(),
 		// gormfx.Module(),
 		healthfx.Module(),
 		// openrouterfx.Module(),
 		// redisfx.Module(),
 		// sqlxfx.Module(),
-		telegofx.Module(true),
+		// telegofx.Module(true),
 		// validatorfx.Module(),
 		// watermillfx.Module(),
 		//
 		// APP MODULES
 		config.Module(),
-		db.Module(),
 		server.Module(),
-		bot.Module(),
-		//
+
 		// BUSINESS MODULES
 		fx.Supply(version),
-		example.Module(true),
 
 		fx.Invoke(func(lc fx.Lifecycle, logger *zap.Logger) {
 			lc.Append(fx.Hook{
