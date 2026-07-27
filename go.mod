@@ -5,12 +5,15 @@ go 1.25.7
 require (
 	github.com/go-core-fx/config v0.1.0
 	github.com/go-core-fx/fiberfx v0.5.1
+	github.com/go-core-fx/fxutil v0.0.2
 	github.com/go-core-fx/healthfx v0.1.0
 	github.com/go-core-fx/logger v0.0.1
 	github.com/gofiber/fiber/v2 v2.52.14
+	github.com/prometheus/client_golang v1.23.2
 	github.com/samber/lo v1.53.0
 	github.com/swaggo/swag v1.16.6
 	github.com/urfave/cli/v3 v3.10.1
+	go.bug.st/serial v1.8.0
 	go.uber.org/fx v1.24.0
 	go.uber.org/zap v1.28.0
 )
@@ -24,7 +27,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.10 // indirect
-	github.com/go-core-fx/fxutil v0.0.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/go-openapi/jsonreference v1.0.0 // indirect
 	github.com/go-openapi/spec v0.22.6 // indirect
@@ -57,7 +59,6 @@ require (
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.69.0 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect

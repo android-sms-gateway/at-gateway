@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/server"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/healthfx"
@@ -52,6 +53,7 @@ func run(ctx context.Context, version healthfx.Version) error {
 		server.Module(),
 
 		// BUSINESS MODULES
+		modem.Module(true),
 		fx.Supply(version),
 
 		fx.Invoke(func(lc fx.Lifecycle, logger *zap.Logger) {
