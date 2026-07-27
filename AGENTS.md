@@ -1,4 +1,4 @@
-# go-project-template — AGENTS.md
+# at-gateway — AGENTS.md
 
 ## Commands
 - `make deps` — go mod download
@@ -13,21 +13,20 @@
 
 ## Architecture
 - **Entrypoint**: main.go — swag //go:generate directive; version injected via ldflags (appVersion, appBuildDate, appReleaseID)
-- **CLI**: urfave/cli/v3 in internal/app.go — CLI shell with DefaultCommand "serve"; commands in internal/commands/{serve,example}/
-- **DI**: Fx graphs live in each command (internal/commands/serve/serve.go, internal/commands/example/example.go)
+- **CLI**: urfave/cli/v3 in internal/app.go — CLI shell with DefaultCommand "serve"; commands in internal/commands/serve/
+- **DI**: Fx graphs live in each command (internal/commands/serve/serve.go)
 - **Config**: go-core-fx/config — env vars + optional YAML via CONFIG_PATH env var
 - **HTTP**: Fiber at 127.0.0.1:3000, routes under /api/v1, validation middleware at group level
-- **Bot**: telego + telegofx (Telegram), proxy set via fasthttpproxy.FasthttpProxyHTTPDialer()
-- **DB**: MySQL/MariaDB via Bun (mysqldialect), Goose migrations in internal/db/migrations/ (//go:embed *.sql)
+- **Modem**: AT command serial modem (SIM800L and similar) via go.bug.st/serial
 - **Metrics**: Prometheus via fiberfx (auto), per-module counters via promauto
 
 ## Module Conventions
-- Each package exposes a Module(...) fx.Option (withRun bool for modules with background work)
+- Each package exposes Module(...) fx.Option (withRun bool for modules with background work)
 - Handlers registered via group tags: Provide(..., fx.ResultTags(`group:"handlers"`))
 - Internal-only deps use fx.Private
 - Services with Run(ctx) use `fxutil.RegisterRunnable[*T]()` — conditionally via `withRun` bool
 - Per-module named logger: logger.WithNamedLogger("name")
-- Config module maps raw Config struct to sub-configs for fiberfx, telegofx, sqlfx, openapi, example
+- Config module maps raw Config struct to sub-configs for fiberfx, openapi, modem
 
 ## Code Generation
 - Swagger docs: go generate ./... (swag init --parseDependency --outputTypes go -g ./main.go -o ./internal/server/docs)
@@ -40,7 +39,6 @@
 - Format + lint + test + coverage in that order
 - CI: lint + test on push/PR to master in .github/workflows/go.yml
 - CI: goreleaser snapshot on PR; release on v* tags
-- E2E CI job is disabled (if: false)
 - Stale issues/PRs closed after 14d inactivity
 
 ## Testing

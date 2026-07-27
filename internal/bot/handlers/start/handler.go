@@ -3,7 +3,7 @@ package start
 import (
 	"fmt"
 
-	"github.com/capcom6/go-project-template/internal/bot/handler"
+	"github.com/android-sms-gateway/at-gateway/internal/bot/handler"
 	"github.com/go-core-fx/telegofx"
 	"github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"

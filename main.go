@@ -1,12 +1,12 @@
-// Golang project template
+// AT Gateway SMS Gateway daemon using AT-command modems
 //
-//	@title			Project API
+//	@title			AT Gateway API
 //	@version		1.0.0
-//	@description	Project API documentation
+//	@description	SMS Gateway daemon using AT-command modems
 //
 //	@contact.name	API Support
-//	@contact.url	https://github.com/capcom6
-//	@contact.email	i@capcom.me
+//	@contact.url	https://github.com/android-sms-gateway/at-gateway
+//	@contact.email	support@sms-gate.app
 //
 //	@license.name	Apache 2.0
 //	@license.url	http://www.apache.org/licenses/LICENSE-2.0.html
@@ -19,7 +19,7 @@ import (
 	"runtime"
 	"strconv"
 
-	"github.com/capcom6/go-project-template/internal"
+	"github.com/android-sms-gateway/at-gateway/internal"
 	"github.com/go-core-fx/healthfx"
 	"github.com/samber/lo"
 )

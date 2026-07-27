@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/capcom6/go-project-template/internal/commands"
+	"github.com/android-sms-gateway/at-gateway/internal/commands"
 	"github.com/go-core-fx/healthfx"
 	"github.com/samber/lo"
 	"github.com/urfave/cli/v3"
@@ -14,9 +14,9 @@ import (
 
 func Run(version healthfx.Version) {
 	app := &cli.Command{
-		Name:           "go-project-template",
-		Usage:          "Example Go project with HTTP server and Telegram bot",
-		Description:    "Example Go project with HTTP server and Telegram bot",
+		Name:           "at-gateway",
+		Usage:          "SMS Gateway daemon using AT-command modems",
+		Description:    "SMS Gateway daemon using AT-command modems",
 		Version:        version.Version,
 		DefaultCommand: "serve",
 		Flags:          []cli.Flag{},

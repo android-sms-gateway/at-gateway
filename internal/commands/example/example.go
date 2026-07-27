@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/capcom6/go-project-template/internal/config"
-	"github.com/capcom6/go-project-template/internal/example"
+	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/example"
 	"github.com/go-core-fx/healthfx"
 	"github.com/go-core-fx/logger"
 	"github.com/urfave/cli/v3"
