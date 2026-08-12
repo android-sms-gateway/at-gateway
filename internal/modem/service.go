@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/android-sms-gateway/at-gateway/internal/modem/at"
+	"github.com/android-sms-gateway/at-gateway/internal/modem/port"
 	"go.uber.org/zap"
 )
 
@@ -16,8 +18,8 @@ type Service struct {
 	sim      SimInfo
 	commands *Commands
 
-	port Port
-	at   *AT
+	port port.Port
+	at   *at.AT
 
 	mu sync.RWMutex
 
@@ -98,21 +100,21 @@ func (s *Service) Run(ctx context.Context) error {
 func (s *Service) connect(ctx context.Context) error {
 	s.setState(StateConnecting)
 
-	port, err := OpenPort(s.config.Port, s.config.BaudRate)
+	port, err := port.Open(port.Config{
+		Name:     s.config.Port,
+		BaudRate: s.config.BaudRate,
+	})
 	if err != nil {
 		s.setState(StateError)
 		return fmt.Errorf("open port %s: %w", s.config.Port, err)
 	}
 
-	at := NewAT(port)
+	at := at.NewAT(at.Config{Timeout: s.config.CommandTimeout}, port)
 	at.Start()
 
-	commands := &Commands{
-		at: at,
-		config: CommandsConfig{
-			CommandTimeout: s.config.CommandTimeout,
-		},
-	}
+	commands := NewCommands(at, CommandsConfig{
+		CommandTimeout: s.config.CommandTimeout,
+	})
 
 	s.mu.Lock()
 	s.port = port
@@ -193,7 +195,7 @@ func (s *Service) SIM() SimInfo {
 	return s.sim
 }
 
-func (s *Service) ExecAT(ctx context.Context, cmd string) (*ATResponse, error) {
+func (s *Service) ExecAT(ctx context.Context, cmd string) (*at.Response, error) {
 	s.mu.RLock()
 	at := s.at
 	s.mu.RUnlock()
@@ -202,7 +204,12 @@ func (s *Service) ExecAT(ctx context.Context, cmd string) (*ATResponse, error) {
 		return nil, ErrModemNotReady
 	}
 
-	return at.Exec(ctx, cmd)
+	res, err := at.Exec(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cmd, err)
+	}
+
+	return res, nil
 }
 
 func (s *Service) SignalUpdate(ctx context.Context) {
@@ -213,9 +220,6 @@ func (s *Service) SignalUpdate(ctx context.Context) {
 	if commands == nil {
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, commands.config.CommandTimeout)
-	defer cancel()
 
 	sim, err := commands.GetSimInfo(ctx)
 	if err != nil {

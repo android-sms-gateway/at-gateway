@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/android-sms-gateway/at-gateway/internal/modem/at"
 )
 
 type CommandsConfig struct {
@@ -13,8 +15,16 @@ type CommandsConfig struct {
 }
 
 type Commands struct {
-	at     *AT
+	at     *at.AT
 	config CommandsConfig
+}
+
+// NewCommands creates a new Commands instance.
+func NewCommands(at *at.AT, config CommandsConfig) *Commands {
+	return &Commands{
+		at:     at,
+		config: config,
+	}
 }
 
 func (c *Commands) Init(ctx context.Context) error {
@@ -123,7 +133,7 @@ func (c *Commands) GetSimInfo(ctx context.Context) (SimInfo, error) {
 func (c *Commands) atGetString(ctx context.Context, cmd string) (string, error) {
 	resp, err := c.at.Exec(ctx, cmd)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%s: %w", cmd, err)
 	}
 	if len(resp.Lines) > 0 {
 		return strings.TrimSpace(resp.Lines[0]), nil
