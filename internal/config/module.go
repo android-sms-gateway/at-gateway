@@ -1,7 +1,10 @@
 package config
 
 import (
+	"github.com/android-sms-gateway/at-gateway/internal/auth"
+	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/openapi"
 	"go.uber.org/fx"
@@ -27,13 +30,33 @@ func Module() fx.Option {
 				}
 			},
 		),
-		fx.Provide(func(cfg Config) modem.Config {
-			return modem.Config{
-				Port:           cfg.Modem.Port,
-				BaudRate:       cfg.Modem.BaudRate,
-				InitTimeout:    cfg.Modem.InitTimeout,
-				CommandTimeout: cfg.Modem.CommandTimeout,
-			}
-		}),
+		fx.Provide(
+			func(cfg Config) modem.Config {
+				return modem.Config{
+					Port:           cfg.Modem.Port,
+					BaudRate:       cfg.Modem.BaudRate,
+					InitTimeout:    cfg.Modem.InitTimeout,
+					CommandTimeout: cfg.Modem.CommandTimeout,
+				}
+			},
+			func(cfg Config) storage.Config {
+				return storage.Config{
+					Path: cfg.Storage.Path,
+				}
+			},
+			func(cfg Config) auth.Config {
+				return auth.Config{
+					Basic: auth.BasicConfig{
+						Username: cfg.Auth.Basic.Username,
+						Password: cfg.Auth.Basic.Password,
+					},
+				}
+			},
+			func(cfg Config) devices.Config {
+				return devices.Config{
+					Name: cfg.Device.Name,
+				}
+			},
+		),
 	)
 }

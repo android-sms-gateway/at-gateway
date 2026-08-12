@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/android-sms-gateway/at-gateway/internal/auth"
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/server"
+	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/healthfx"
 	"github.com/go-core-fx/logger"
+	"github.com/go-core-fx/validatorfx"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -45,15 +49,18 @@ func run(ctx context.Context, version healthfx.Version) error {
 		// redisfx.Module(),
 		// sqlxfx.Module(),
 		// telegofx.Module(true),
-		// validatorfx.Module(),
+		validatorfx.Module(),
 		// watermillfx.Module(),
 		//
 		// APP MODULES
 		config.Module(),
 		server.Module(),
-
+		storage.Module(),
+		//
 		// BUSINESS MODULES
 		modem.Module(true),
+		auth.Module(),
+		devices.Module(),
 		fx.Supply(version),
 
 		fx.Invoke(func(lc fx.Lifecycle, logger *zap.Logger) {

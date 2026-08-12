@@ -28,9 +28,29 @@ type modemConfig struct {
 	CommandTimeout time.Duration `koanf:"command_timeout"`
 }
 
+type storageConfig struct {
+	Path string `koanf:"path"`
+}
+
+type authConfig struct {
+	Basic authBasicConfig `koanf:"basic"`
+}
+
+type authBasicConfig struct {
+	Username string `koanf:"username"`
+	Password string `koanf:"password"`
+}
+
+type deviceConfig struct {
+	Name string `koanf:"name"`
+}
+
 type Config struct {
-	HTTP  http        `koanf:"http"`
-	Modem modemConfig `koanf:"modem"`
+	HTTP    http          `koanf:"http"`
+	Modem   modemConfig   `koanf:"modem"`
+	Storage storageConfig `koanf:"storage"`
+	Auth    authConfig    `koanf:"auth"`
+	Device  deviceConfig  `koanf:"device"`
 }
 
 func Default() Config {
@@ -51,6 +71,18 @@ func Default() Config {
 			BaudRate:       115200,
 			InitTimeout:    30 * time.Second,
 			CommandTimeout: 10 * time.Second,
+		},
+		Storage: storageConfig{
+			Path: "data/storage.json",
+		},
+		Auth: authConfig{
+			Basic: authBasicConfig{
+				Username: "sms",
+				Password: "",
+			},
+		},
+		Device: deviceConfig{
+			Name: "",
 		},
 	}
 }
