@@ -1,7 +1,47 @@
 @baseURL=http://localhost:3000
+@basicPassword={{$dotenv ASG__PASSWORD}}
+@recipientPhone={{$dotenv PHONE}}
+
+# ============================================================
+# 1. HEALTH — Unauthenticated
+# ============================================================
 
 ###
 GET {{baseURL}}/health HTTP/1.1
 
 ###
+GET {{baseURL}}/health/live HTTP/1.1
+
+###
 GET {{baseURL}}/health/ready HTTP/1.1
+
+###
+GET {{baseURL}}/health/startup HTTP/1.1
+
+# ============================================================
+# 2. CREDENTIALS — Verify auth works
+# ============================================================
+
+###
+GET {{baseURL}}/api/v1 HTTP/1.1
+Authorization: Basic sms:invalid
+
+###
+GET {{baseURL}}/api/v1 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+# ============================================================
+# 3. DEVICES
+# ============================================================
+
+###
+# @name getDevice
+GET {{baseURL}}/api/v1/devices HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+@deviceID={{getDevice.response.body.$[0].id}}
+
+###
+DELETE {{baseURL}}/api/v1/devices/{{deviceID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}

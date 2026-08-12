@@ -22,7 +22,1863 @@ const docTemplate = `{
     },
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
-    "paths": {}
+    "paths": {
+        "/devices": {
+            "get": {
+                "description": "Returns list of registered devices",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Devices"
+                ],
+                "summary": "List devices",
+                "responses": {
+                    "200": {
+                        "description": "Device list",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/smsgateway.Device"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/devices/{id}": {
+            "delete": {
+                "description": "Removes device",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Devices"
+                ],
+                "summary": "Remove device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successfully removed"
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Device not found",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "501": {
+                        "description": "Not implemented",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inbox": {
+            "get": {
+                "description": "Retrieves incoming messages with filtering and pagination.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Inbox"
+                ],
+                "summary": "Get incoming messages",
+                "parameters": [
+                    {
+                        "enum": [
+                            "SMS",
+                            "DATA_SMS",
+                            "MMS",
+                            "MMS_DOWNLOADED"
+                        ],
+                        "type": "string",
+                        "description": "Filter incoming messages by type",
+                        "name": "type",
+                        "in": "query"
+                    },
+                    {
+                        "maximum": 500,
+                        "minimum": 1,
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Maximum number of messages to return",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "minimum": 0,
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Number of messages to skip",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Start of date range (ISO 8601)",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "End of date range (ISO 8601)",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Device ID",
+                        "name": "deviceId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "A list of incoming messages",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/smsgateway.IncomingMessage"
+                            }
+                        },
+                        "headers": {
+                            "X-Total-Count": {
+                                "type": "integer",
+                                "description": "Total number of items available"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "501": {
+                        "description": "Not implemented",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/inbox/refresh": {
+            "post": {
+                "description": "Refreshes inbox messages. Webhooks are triggered when triggerWebhooks is true.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Inbox"
+                ],
+                "summary": "Request inbox messages refresh",
+                "parameters": [
+                    {
+                        "description": "Refresh inbox request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.InboxRefreshRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Inbox refresh request accepted"
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/messages": {
+            "get": {
+                "description": "Retrieves a list of messages with filtering and pagination",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Messages"
+                ],
+                "summary": "Get messages",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Start date in RFC3339 format",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "End date in RFC3339 format",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "Pending",
+                            "Cancelling",
+                            "Cancelled",
+                            "Processed",
+                            "Sent",
+                            "Delivered",
+                            "Failed"
+                        ],
+                        "type": "string",
+                        "description": "Filter messages by processing state",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "maxLength": 21,
+                        "minLength": 21,
+                        "type": "string",
+                        "description": "Filter by device ID",
+                        "name": "deviceId",
+                        "in": "query"
+                    },
+                    {
+                        "maximum": 100,
+                        "minimum": 1,
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Pagination limit",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Pagination offset",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Include textMessage/dataMessage content for each message. Default is false",
+                        "name": "includeContent",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "created_at",
+                            "-created_at"
+                        ],
+                        "type": "string",
+                        "default": "-created_at",
+                        "description": "Sort order per JSON:API spec. Use created_at (ascending) or -created_at (descending)",
+                        "name": "sort",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "A list of messages",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/smsgateway.MessageState"
+                            }
+                        },
+                        "headers": {
+                            "X-Total-Count": {
+                                "type": "integer",
+                                "description": "Total number of items available"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Enqueues a message for sending. If ` + "`" + `deviceId` + "`" + ` is set, the specified device is used; otherwise a random registered device is chosen.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Messages"
+                ],
+                "summary": "Enqueue message",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Skip phone validation",
+                        "name": "skipPhoneValidation",
+                        "in": "query"
+                    },
+                    {
+                        "minimum": 0,
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Filter devices active within the specified number of hours",
+                        "name": "deviceActiveWithin",
+                        "in": "query"
+                    },
+                    {
+                        "description": "Send message request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.Message"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Message enqueued",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.GetMessageResponse"
+                        },
+                        "headers": {
+                            "Location": {
+                                "type": "string",
+                                "description": "Get message state URL"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Message with such ID already exists",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Queue limits exceeded; ensure device is online",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/messages/{id}": {
+            "get": {
+                "description": "Returns message state by ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Messages"
+                ],
+                "summary": "Get message state",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Message ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Message state",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.GetMessageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Cancels a pending message by ID. The message must be in Pending state.",
+                "tags": [
+                    "User",
+                    "Messages"
+                ],
+                "summary": "Cancel message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Message ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Message state after cancellation",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.GetMessageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Message not found",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings": {
+            "get": {
+                "description": "Returns settings for a specific user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Settings"
+                ],
+                "summary": "Get settings",
+                "responses": {
+                    "200": {
+                        "description": "Settings",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.DeviceSettings"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Replaces settings",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Settings"
+                ],
+                "summary": "Replace settings",
+                "parameters": [
+                    {
+                        "description": "Settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.DeviceSettings"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Settings updated",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "description": "Partially updates settings for a specific user",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Settings"
+                ],
+                "summary": "Partially update settings",
+                "parameters": [
+                    {
+                        "description": "Settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.DeviceSettings"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Settings updated",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/webhooks": {
+            "get": {
+                "description": "Returns list of registered webhooks",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Webhooks"
+                ],
+                "summary": "List webhooks",
+                "responses": {
+                    "200": {
+                        "description": "Webhook list",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/smsgateway.Webhook"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Registers webhook. If webhook with same ID already exists, it will be replaced",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Webhooks"
+                ],
+                "summary": "Register webhook",
+                "parameters": [
+                    {
+                        "description": "Webhook",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.Webhook"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.Webhook"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/webhooks/{id}": {
+            "delete": {
+                "description": "Deletes webhook",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User",
+                    "Webhooks"
+                ],
+                "summary": "Delete webhook",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Webhook ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successfully removed"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "smsgateway.DataMessage": {
+            "type": "object",
+            "required": [
+                "data",
+                "port"
+            ],
+            "properties": {
+                "data": {
+                    "description": "Data is the base64-encoded payload.",
+                    "type": "string",
+                    "format": "byte",
+                    "maxLength": 65535,
+                    "minLength": 4,
+                    "example": "SGVsbG8gV29ybGQh"
+                },
+                "port": {
+                    "description": "Port is the destination port.",
+                    "type": "integer",
+                    "maximum": 65535,
+                    "minimum": 1,
+                    "example": 53739
+                }
+            }
+        },
+        "smsgateway.Device": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "description": "Time at which the device was created, read only.",
+                    "type": "string",
+                    "example": "2020-01-01T00:00:00Z"
+                },
+                "deletedAt": {
+                    "description": "Time at which the device was deleted, read only.",
+                    "type": "string",
+                    "example": "2020-01-01T00:00:00Z"
+                },
+                "id": {
+                    "description": "Device ID, read only.",
+                    "type": "string",
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "lastSeen": {
+                    "description": "Time at which the device was last seen, read only.",
+                    "type": "string",
+                    "example": "2020-01-01T00:00:00Z"
+                },
+                "name": {
+                    "description": "Device name.",
+                    "type": "string",
+                    "example": "My Device"
+                },
+                "simCards": {
+                    "description": "List of SIM cards in the device.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/smsgateway.SimCard"
+                    }
+                },
+                "updatedAt": {
+                    "description": "Time at which the device was last updated, read only.",
+                    "type": "string",
+                    "example": "2020-01-01T00:00:00Z"
+                }
+            }
+        },
+        "smsgateway.DeviceSettings": {
+            "type": "object",
+            "properties": {
+                "encryption": {
+                    "description": "Encryption contains settings related to message encryption.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsEncryption"
+                        }
+                    ]
+                },
+                "gateway": {
+                    "description": "Gateway contains settings related to the gateway.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsGateway"
+                        }
+                    ]
+                },
+                "logs": {
+                    "description": "Logs contains settings related to logging.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsLogs"
+                        }
+                    ]
+                },
+                "messages": {
+                    "description": "Messages contains settings related to message handling.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsMessages"
+                        }
+                    ]
+                },
+                "ping": {
+                    "description": "Ping contains settings related to ping functionality.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsPing"
+                        }
+                    ]
+                },
+                "receiver": {
+                    "description": "Receiver contains settings related to SMS message reception.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsReceiver"
+                        }
+                    ]
+                },
+                "webhooks": {
+                    "description": "Webhooks contains settings related to webhook functionality.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SettingsWebhooks"
+                        }
+                    ]
+                }
+            }
+        },
+        "smsgateway.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "description": "Error code",
+                    "type": "integer"
+                },
+                "data": {
+                    "description": "Error context"
+                },
+                "message": {
+                    "description": "Error message",
+                    "type": "string",
+                    "example": "An error occurred"
+                }
+            }
+        },
+        "smsgateway.GetMessageResponse": {
+            "type": "object",
+            "required": [
+                "deviceId",
+                "id",
+                "recipients",
+                "state"
+            ],
+            "properties": {
+                "dataMessage": {
+                    "description": "Present only when ` + "`" + `includeContent=true` + "`" + ` and the message type is data.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.DataMessage"
+                        }
+                    ]
+                },
+                "deviceId": {
+                    "description": "Device ID",
+                    "type": "string",
+                    "maxLength": 21,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "hashedMessage": {
+                    "description": "Hashed message content, if isHashed is true",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.HashedMessage"
+                        }
+                    ]
+                },
+                "id": {
+                    "description": "Message ID",
+                    "type": "string",
+                    "maxLength": 36,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "isEncrypted": {
+                    "description": "Encrypted",
+                    "type": "boolean",
+                    "example": false
+                },
+                "isHashed": {
+                    "description": "Hashed",
+                    "type": "boolean",
+                    "example": false
+                },
+                "recipients": {
+                    "description": "Recipients states",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/smsgateway.RecipientState"
+                    }
+                },
+                "state": {
+                    "description": "State",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.ProcessingState"
+                        }
+                    ],
+                    "example": "Pending"
+                },
+                "states": {
+                    "description": "History of states",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "textMessage": {
+                    "description": "Present only when ` + "`" + `includeContent=true` + "`" + ` and the message type is text.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.TextMessage"
+                        }
+                    ]
+                }
+            }
+        },
+        "smsgateway.HashedMessage": {
+            "type": "object",
+            "required": [
+                "hash"
+            ],
+            "properties": {
+                "hash": {
+                    "type": "string",
+                    "example": "1d4b6e3b1b6e3b1b6e3b1b6e3b1b6e3b1b6e3b1b"
+                }
+            }
+        },
+        "smsgateway.InboxRefreshRequest": {
+            "type": "object",
+            "required": [
+                "since",
+                "until"
+            ],
+            "properties": {
+                "deviceId": {
+                    "description": "ID of the device to refresh messages for.",
+                    "type": "string",
+                    "maxLength": 21,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "messageTypes": {
+                    "description": "List of message types to refresh. By default, SMS messages are refreshed.",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/smsgateway.IncomingMessageType"
+                    }
+                },
+                "since": {
+                    "description": "Start of the time range to refresh.",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2024-01-01T00:00:00Z"
+                },
+                "triggerWebhooks": {
+                    "description": "Indicates whether to trigger webhooks for the refreshed messages.",
+                    "type": "boolean",
+                    "example": true
+                },
+                "until": {
+                    "description": "End of the time range to refresh.",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2024-01-01T23:59:59Z"
+                }
+            }
+        },
+        "smsgateway.IncomingMessage": {
+            "type": "object",
+            "required": [
+                "contentPreview",
+                "createdAt",
+                "id",
+                "sender",
+                "type"
+            ],
+            "properties": {
+                "contentPreview": {
+                    "description": "Message body preview or metadata",
+                    "type": "string",
+                    "example": "Hello World!"
+                },
+                "createdAt": {
+                    "description": "Message received timestamp",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2020-01-01T00:00:00Z"
+                },
+                "id": {
+                    "description": "Incoming message ID",
+                    "type": "string",
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "recipient": {
+                    "description": "Recipient phone number on the device",
+                    "type": "string",
+                    "example": "+79990001234"
+                },
+                "sender": {
+                    "description": "Incoming sender phone number",
+                    "type": "string",
+                    "example": "+79990001234"
+                },
+                "simNumber": {
+                    "description": "SIM slot number",
+                    "type": "integer",
+                    "example": 1
+                },
+                "type": {
+                    "description": "Message type",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.IncomingMessageType"
+                        }
+                    ],
+                    "example": "SMS"
+                }
+            }
+        },
+        "smsgateway.IncomingMessageType": {
+            "type": "string",
+            "enum": [
+                "SMS",
+                "DATA_SMS",
+                "MMS",
+                "MMS_DOWNLOADED"
+            ],
+            "x-enum-comments": {
+                "IncomingMessageTypeDataSMS": "Data SMS message",
+                "IncomingMessageTypeMMS": "MMS message",
+                "IncomingMessageTypeMmsDownloaded": "Downloaded MMS message",
+                "IncomingMessageTypeSMS": "SMS message"
+            },
+            "x-enum-descriptions": [
+                "SMS message",
+                "Data SMS message",
+                "MMS message",
+                "Downloaded MMS message"
+            ],
+            "x-enum-varnames": [
+                "IncomingMessageTypeSMS",
+                "IncomingMessageTypeDataSMS",
+                "IncomingMessageTypeMMS",
+                "IncomingMessageTypeMmsDownloaded"
+            ]
+        },
+        "smsgateway.LimitPeriod": {
+            "type": "string",
+            "enum": [
+                "Disabled",
+                "PerMinute",
+                "Per30Minutes",
+                "PerHour",
+                "PerDay"
+            ],
+            "x-enum-varnames": [
+                "Disabled",
+                "PerMinute",
+                "Per30Minutes",
+                "PerHour",
+                "PerDay"
+            ]
+        },
+        "smsgateway.Message": {
+            "type": "object",
+            "required": [
+                "phoneNumbers"
+            ],
+            "properties": {
+                "dataMessage": {
+                    "description": "Data message",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.DataMessage"
+                        }
+                    ]
+                },
+                "deviceId": {
+                    "description": "Optional device ID for explicit selection",
+                    "type": "string",
+                    "maxLength": 21,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "id": {
+                    "description": "ID (if not set - will be generated)",
+                    "type": "string",
+                    "maxLength": 36,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "isEncrypted": {
+                    "description": "Is encrypted",
+                    "type": "boolean",
+                    "example": true
+                },
+                "message": {
+                    "description": "Message content (deprecated, use TextMessage instead)",
+                    "type": "string",
+                    "maxLength": 65535,
+                    "example": "Hello World!"
+                },
+                "phoneNumbers": {
+                    "description": "Recipients (phone numbers)",
+                    "type": "array",
+                    "maxItems": 100,
+                    "minItems": 1,
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "79990001234"
+                    ]
+                },
+                "priority": {
+                    "description": "Priority, messages with values greater than ` + "`" + `99` + "`" + ` will bypass limits and delays",
+                    "default": 0,
+                    "maximum": 127,
+                    "minimum": -128,
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.MessagePriority"
+                        }
+                    ],
+                    "example": 0
+                },
+                "scheduleAt": {
+                    "description": "Schedule message delivery at (must be in the future)",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2020-01-01T08:30:00Z"
+                },
+                "simNumber": {
+                    "description": "SIM card number (1-3), if not set - default SIM will be used",
+                    "type": "integer",
+                    "maximum": 3,
+                    "minimum": 1,
+                    "example": 1
+                },
+                "textMessage": {
+                    "description": "Text message",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.TextMessage"
+                        }
+                    ]
+                },
+                "ttl": {
+                    "description": "Time to live in seconds (conflicts with ` + "`" + `ValidUntil` + "`" + `)",
+                    "type": "integer",
+                    "minimum": 5,
+                    "example": 86400
+                },
+                "validUntil": {
+                    "description": "Valid until (conflicts with ` + "`" + `TTL` + "`" + `)",
+                    "type": "string",
+                    "format": "date-time",
+                    "example": "2020-01-01T00:00:00Z"
+                },
+                "withDeliveryReport": {
+                    "description": "With delivery report",
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "smsgateway.MessagePriority": {
+            "type": "integer",
+            "format": "int32",
+            "enum": [
+                -128,
+                0,
+                100,
+                127
+            ],
+            "x-enum-comments": {
+                "PriorityBypassThreshold": "Threshold at which messages bypass limits and delays"
+            },
+            "x-enum-descriptions": [
+                "",
+                "",
+                "Threshold at which messages bypass limits and delays",
+                ""
+            ],
+            "x-enum-varnames": [
+                "PriorityMinimum",
+                "PriorityDefault",
+                "PriorityBypassThreshold",
+                "PriorityMaximum"
+            ]
+        },
+        "smsgateway.MessageState": {
+            "type": "object",
+            "required": [
+                "deviceId",
+                "id",
+                "recipients",
+                "state"
+            ],
+            "properties": {
+                "dataMessage": {
+                    "description": "Present only when ` + "`" + `includeContent=true` + "`" + ` and the message type is data.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.DataMessage"
+                        }
+                    ]
+                },
+                "deviceId": {
+                    "description": "Device ID",
+                    "type": "string",
+                    "maxLength": 21,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "hashedMessage": {
+                    "description": "Hashed message content, if isHashed is true",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.HashedMessage"
+                        }
+                    ]
+                },
+                "id": {
+                    "description": "Message ID",
+                    "type": "string",
+                    "maxLength": 36,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "isEncrypted": {
+                    "description": "Encrypted",
+                    "type": "boolean",
+                    "example": false
+                },
+                "isHashed": {
+                    "description": "Hashed",
+                    "type": "boolean",
+                    "example": false
+                },
+                "recipients": {
+                    "description": "Recipients states",
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/smsgateway.RecipientState"
+                    }
+                },
+                "state": {
+                    "description": "State",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.ProcessingState"
+                        }
+                    ],
+                    "example": "Pending"
+                },
+                "states": {
+                    "description": "History of states",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "textMessage": {
+                    "description": "Present only when ` + "`" + `includeContent=true` + "`" + ` and the message type is text.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.TextMessage"
+                        }
+                    ]
+                }
+            }
+        },
+        "smsgateway.MessagesProcessingOrder": {
+            "type": "string",
+            "enum": [
+                "LIFO",
+                "FIFO"
+            ],
+            "x-enum-varnames": [
+                "LIFO",
+                "FIFO"
+            ]
+        },
+        "smsgateway.ProcessingState": {
+            "type": "string",
+            "enum": [
+                "Pending",
+                "Cancelling",
+                "Cancelled",
+                "Processed",
+                "Sent",
+                "Delivered",
+                "Failed"
+            ],
+            "x-enum-comments": {
+                "ProcessingStateCancelled": "Cancelled",
+                "ProcessingStateCancelling": "Cancelling (cancellation requested)",
+                "ProcessingStateDelivered": "Delivered",
+                "ProcessingStateFailed": "Failed",
+                "ProcessingStatePending": "Pending",
+                "ProcessingStateProcessed": "Processed (received by device)",
+                "ProcessingStateSent": "Sent"
+            },
+            "x-enum-descriptions": [
+                "Pending",
+                "Cancelling (cancellation requested)",
+                "Cancelled",
+                "Processed (received by device)",
+                "Sent",
+                "Delivered",
+                "Failed"
+            ],
+            "x-enum-varnames": [
+                "ProcessingStatePending",
+                "ProcessingStateCancelling",
+                "ProcessingStateCancelled",
+                "ProcessingStateProcessed",
+                "ProcessingStateSent",
+                "ProcessingStateDelivered",
+                "ProcessingStateFailed"
+            ]
+        },
+        "smsgateway.RecipientState": {
+            "type": "object",
+            "required": [
+                "phoneNumber",
+                "state"
+            ],
+            "properties": {
+                "error": {
+                    "description": "Error (for ` + "`" + `Failed` + "`" + ` state)",
+                    "type": "string",
+                    "example": "timeout"
+                },
+                "phoneNumber": {
+                    "description": "Phone number or first 16 symbols of SHA256 hash",
+                    "type": "string",
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "example": "79990001234"
+                },
+                "state": {
+                    "description": "State",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.ProcessingState"
+                        }
+                    ],
+                    "example": "Pending"
+                }
+            }
+        },
+        "smsgateway.SettingsEncryption": {
+            "type": "object",
+            "properties": {
+                "passphrase": {
+                    "description": "Passphrase is the encryption passphrase. If nil or empty, encryption is disabled. Must not be used with Cloud Server.",
+                    "type": "string"
+                }
+            }
+        },
+        "smsgateway.SettingsGateway": {
+            "type": "object",
+            "properties": {
+                "cloud_url": {
+                    "description": "CloudURL is the URL of the cloud server. Must not be used with Cloud Server.",
+                    "type": "string"
+                },
+                "notification_channel": {
+                    "description": "NotificationChannel is the way device receives notifications.",
+                    "type": "string",
+                    "enum": [
+                        "AUTO",
+                        "SSE_ONLY"
+                    ]
+                },
+                "private_token": {
+                    "description": "PrivateToken is the auth token for the private server. Must not be used with Cloud Server.",
+                    "type": "string"
+                }
+            }
+        },
+        "smsgateway.SettingsLogs": {
+            "type": "object",
+            "properties": {
+                "lifetime_days": {
+                    "description": "LifetimeDays is the number of days to retain logs.\nMust be at least 1 when provided.",
+                    "type": "integer",
+                    "minimum": 1
+                }
+            }
+        },
+        "smsgateway.SettingsMessages": {
+            "type": "object",
+            "properties": {
+                "limit_period": {
+                    "description": "LimitPeriod defines the period for message sending limits.\nValid values are \"Disabled\", \"PerMinute\", \"Per30Minutes\", \"PerHour\", or \"PerDay\".",
+                    "enum": [
+                        "Disabled",
+                        "PerMinute",
+                        "Per30Minutes",
+                        "PerHour",
+                        "PerDay"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.LimitPeriod"
+                        }
+                    ]
+                },
+                "limit_value": {
+                    "description": "LimitValue is the maximum number of messages allowed per limit period.\nMust be at least 1 when provided.",
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "log_lifetime_days": {
+                    "description": "LogLifetimeDays is the number of days to retain message logs.\nMust be at least 1 when provided.",
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "processing_order": {
+                    "description": "MessagesProcessingOrder defines the order in which messages are processed.\nValid values are \"LIFO\" or \"FIFO\".",
+                    "enum": [
+                        "LIFO",
+                        "FIFO"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.MessagesProcessingOrder"
+                        }
+                    ]
+                },
+                "send_interval_max": {
+                    "description": "SendIntervalMax is the maximum interval between message sends (in seconds).\nMust be at least 1 when provided and greater than or equal to SendIntervalMin.",
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "send_interval_min": {
+                    "description": "SendIntervalMin is the minimum interval between message sends (in seconds).\nMust be at least 1 when provided.",
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "sim_selection_mode": {
+                    "description": "SimSelectionMode defines how SIM cards are selected for sending messages.\nValid values are \"OSDefault\", \"RoundRobin\", or \"Random\".",
+                    "enum": [
+                        "OSDefault",
+                        "RoundRobin",
+                        "Random"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.SimSelectionMode"
+                        }
+                    ]
+                },
+                "work_hours_enabled": {
+                    "description": "WorkHoursEnabled enables restricting message delivery to a configurable time window.",
+                    "type": "boolean"
+                },
+                "work_hours_end": {
+                    "description": "WorkHoursEnd is the end of the working hours window in HH:mm format (24-hour).",
+                    "type": "string"
+                },
+                "work_hours_start": {
+                    "description": "WorkHoursStart is the start of the working hours window in HH:mm format (24-hour).",
+                    "type": "string"
+                }
+            }
+        },
+        "smsgateway.SettingsPing": {
+            "type": "object",
+            "properties": {
+                "interval_seconds": {
+                    "description": "IntervalSeconds is the interval between ping requests (in seconds).\nMust be at least 1 when provided.",
+                    "type": "integer",
+                    "minimum": 1
+                }
+            }
+        },
+        "smsgateway.SettingsReceiver": {
+            "type": "object",
+            "properties": {
+                "content_provider_enabled": {
+                    "description": "ContentProviderEnabled enables monitoring the SMS content provider as a fallback for\ncarriers that intercept the SMS_RECEIVED broadcast.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "smsgateway.SettingsWebhooks": {
+            "type": "object",
+            "properties": {
+                "internet_required": {
+                    "description": "InternetRequired indicates whether internet access is required for webhooks.",
+                    "type": "boolean"
+                },
+                "retry_count": {
+                    "description": "RetryCount is the number of times to retry failed webhook deliveries.\nMust be at least 1 when provided.",
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "signing_key": {
+                    "description": "SigningKey is the secret key used for signing webhook payloads. Must not be used with Cloud Server.",
+                    "type": "string"
+                }
+            }
+        },
+        "smsgateway.SimCard": {
+            "type": "object",
+            "properties": {
+                "carrierName": {
+                    "description": "Carrier/network operator name (may be null).",
+                    "type": "string"
+                },
+                "iccid": {
+                    "description": "Integrated Circuit Card Identifier (may be null).",
+                    "type": "string"
+                },
+                "phoneNumber": {
+                    "description": "Phone number associated with the SIM.",
+                    "type": "string"
+                },
+                "simNumber": {
+                    "description": "1-based slot number (1, 2, or 3).",
+                    "type": "integer"
+                },
+                "slotIndex": {
+                    "description": "0-based physical slot index.",
+                    "type": "integer"
+                }
+            }
+        },
+        "smsgateway.SimSelectionMode": {
+            "type": "string",
+            "enum": [
+                "OSDefault",
+                "RoundRobin",
+                "Random"
+            ],
+            "x-enum-varnames": [
+                "OSDefault",
+                "RoundRobin",
+                "Random"
+            ]
+        },
+        "smsgateway.TextMessage": {
+            "type": "object",
+            "required": [
+                "text"
+            ],
+            "properties": {
+                "text": {
+                    "description": "Text is the message text.",
+                    "type": "string",
+                    "maxLength": 65535,
+                    "minLength": 1,
+                    "example": "Hello World!"
+                }
+            }
+        },
+        "smsgateway.Webhook": {
+            "type": "object",
+            "required": [
+                "event",
+                "url"
+            ],
+            "properties": {
+                "deviceId": {
+                    "description": "The unique identifier of the device the webhook is associated with.",
+                    "type": "string",
+                    "maxLength": 21,
+                    "example": "PyDmBQZZXYmyxMwED8Fzy"
+                },
+                "event": {
+                    "description": "The type of event the webhook is triggered for.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.WebhookEvent"
+                        }
+                    ],
+                    "example": "sms:received"
+                },
+                "id": {
+                    "description": "The unique identifier of the webhook.",
+                    "type": "string",
+                    "maxLength": 36,
+                    "example": "123e4567-e89b-12d3-a456-426614174000"
+                },
+                "url": {
+                    "description": "The URL the webhook will be sent to.",
+                    "type": "string",
+                    "example": "https://example.com/webhook"
+                }
+            }
+        },
+        "smsgateway.WebhookEvent": {
+            "type": "string",
+            "enum": [
+                "sms:received",
+                "sms:data-received",
+                "sms:sent",
+                "sms:delivered",
+                "sms:failed",
+                "sms:cancelled",
+                "system:ping",
+                "mms:received",
+                "mms:downloaded",
+                "app:started"
+            ],
+            "x-enum-comments": {
+                "WebhookEventAppStarted": "Triggered when the application is started.",
+                "WebhookEventMmsDownloaded": "Triggered when an MMS is downloaded.",
+                "WebhookEventMmsReceived": "Triggered when an MMS is received.",
+                "WebhookEventSmsCancelled": "Triggered when an SMS is cancelled.",
+                "WebhookEventSmsDataReceived": "Triggered when a data SMS is received.",
+                "WebhookEventSmsDelivered": "Triggered when an SMS is delivered.",
+                "WebhookEventSmsFailed": "Triggered when an SMS processing fails.",
+                "WebhookEventSmsReceived": "Triggered when an SMS is received.",
+                "WebhookEventSmsSent": "Triggered when an SMS is sent.",
+                "WebhookEventSystemPing": "Triggered when the device pings the server."
+            },
+            "x-enum-descriptions": [
+                "Triggered when an SMS is received.",
+                "Triggered when a data SMS is received.",
+                "Triggered when an SMS is sent.",
+                "Triggered when an SMS is delivered.",
+                "Triggered when an SMS processing fails.",
+                "Triggered when an SMS is cancelled.",
+                "Triggered when the device pings the server.",
+                "Triggered when an MMS is received.",
+                "Triggered when an MMS is downloaded.",
+                "Triggered when the application is started."
+            ],
+            "x-enum-varnames": [
+                "WebhookEventSmsReceived",
+                "WebhookEventSmsDataReceived",
+                "WebhookEventSmsSent",
+                "WebhookEventSmsDelivered",
+                "WebhookEventSmsFailed",
+                "WebhookEventSmsCancelled",
+                "WebhookEventSystemPing",
+                "WebhookEventMmsReceived",
+                "WebhookEventMmsDownloaded",
+                "WebhookEventAppStarted"
+            ]
+        }
+    }
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it

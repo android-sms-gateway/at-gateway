@@ -1,7 +1,12 @@
 package server
 
 import (
+	"github.com/android-sms-gateway/at-gateway/internal/auth"
+	"github.com/android-sms-gateway/at-gateway/internal/server/api"
+	"github.com/android-sms-gateway/at-gateway/internal/server/api/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/server/api/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/server/docs"
+	"github.com/android-sms-gateway/at-gateway/internal/server/middlewares/userauth"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/handler"
 	"github.com/go-core-fx/fiberfx/health"
@@ -32,19 +37,21 @@ func Module() fx.Option {
 			fx.Private,
 		),
 
-		// fx.Provide(
-		// 	fx.Annotate(example.New, fx.ResultTags(`group:"handlers"`)),
-		// 	fx.Private,
-		// ),
+		fx.Provide(
+			fx.Annotate(api.NewHandler, fx.ResultTags(`group:"handlers"`)),
+			fx.Annotate(devices.NewHandler, fx.ResultTags(`group:"handlers"`)),
+			fx.Annotate(messages.NewHandler, fx.ResultTags(`group:"handlers"`)),
+			fx.Private,
+		),
 
 		fx.Invoke(
 			fx.Annotate(
-				func(handlers []handler.Handler, healthHandler *health.Handler, openapiHandler *openapi.Handler, app *fiber.App) {
+				func(handlers []handler.Handler, healthHandler *health.Handler, openapiHandler *openapi.Handler, authSvc *auth.Service, app *fiber.App) {
 					// Health endpoint
 					healthHandler.Register(app)
 
 					// Version 1 API group
-					v1 := app.Group("/api/v1")
+					v1 := app.Group("/api/v1", userauth.NewBasic(authSvc))
 					openapiHandler.Register(v1.Group("/docs"))
 
 					v1.Use(validation.Middleware)
