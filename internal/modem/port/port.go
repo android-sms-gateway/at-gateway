@@ -1,4 +1,4 @@
-package modem
+package port
 
 import (
 	"fmt"
@@ -13,17 +13,17 @@ type Port interface {
 	io.ReadWriteCloser
 }
 
-func OpenPort(portName string, baudRate int) (Port, error) {
+func Open(config Config) (Port, error) {
 	mode := &serial.Mode{
-		BaudRate:          baudRate,
+		BaudRate:          config.BaudRate,
 		DataBits:          serialDataBits,
 		InitialStatusBits: nil,
 		Parity:            serial.NoParity,
 		StopBits:          serial.OneStopBit,
 	}
-	p, err := serial.Open(portName, mode)
+	p, err := serial.Open(config.Name, mode)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", portName, err)
+		return nil, fmt.Errorf("open %s: %w", config.Name, err)
 	}
 	return p, nil
 }
