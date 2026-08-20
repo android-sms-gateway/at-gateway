@@ -32,7 +32,7 @@ func (p *HealthProvider) ReadyProbe(_ context.Context) (healthfx.Checks, error) 
 
 	case StateDisconnected, StateConnecting:
 		status = healthfx.StatusFail
-	case StateBusy, StateError:
+	case StateError:
 		status = healthfx.StatusWarn
 	}
 

@@ -3,11 +3,12 @@ package modem
 // State represents the current modem state.
 type State int
 
+// State values: 0-3. The former busy state was removed in the post-migration
+// cleanup (never set by any code path); StateError is now 3.
 const (
 	StateDisconnected State = iota
 	StateConnecting
 	StateReady
-	StateBusy
 	StateError
 )
 
@@ -19,8 +20,6 @@ func (s State) String() string {
 		return "connecting"
 	case StateReady:
 		return "ready"
-	case StateBusy:
-		return "busy"
 	case StateError:
 		return "error"
 	default:
