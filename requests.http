@@ -18,6 +18,9 @@ GET {{baseURL}}/health/ready HTTP/1.1
 ###
 GET {{baseURL}}/health/startup HTTP/1.1
 
+###
+GET {{baseURL}}/metrics HTTP/1.1
+
 # ============================================================
 # 2. CREDENTIALS — Verify auth works
 # ============================================================
