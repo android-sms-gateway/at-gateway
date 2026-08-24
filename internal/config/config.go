@@ -45,12 +45,17 @@ type deviceConfig struct {
 	Name string `koanf:"name"`
 }
 
+type databaseConfig struct {
+	URL string `koanf:"url"`
+}
+
 type Config struct {
-	HTTP    http          `koanf:"http"`
-	Modem   modemConfig   `koanf:"modem"`
-	Storage storageConfig `koanf:"storage"`
-	Auth    authConfig    `koanf:"auth"`
-	Device  deviceConfig  `koanf:"device"`
+	HTTP     http           `koanf:"http"`
+	Modem    modemConfig    `koanf:"modem"`
+	Storage  storageConfig  `koanf:"storage"`
+	Auth     authConfig     `koanf:"auth"`
+	Device   deviceConfig   `koanf:"device"`
+	Database databaseConfig `koanf:"database"`
 }
 
 func Default() Config {
@@ -83,6 +88,9 @@ func Default() Config {
 		},
 		Device: deviceConfig{
 			Name: "",
+		},
+		Database: databaseConfig{
+			URL: "sqlite://data/gateway.db",
 		},
 	}
 }

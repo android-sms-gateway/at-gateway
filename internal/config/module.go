@@ -1,16 +1,20 @@
 package config
 
 import (
+	"time"
+
 	"github.com/android-sms-gateway/at-gateway/internal/auth"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/openapi"
+	"github.com/go-core-fx/sqlfx"
 	"go.uber.org/fx"
 )
 
 func Module() fx.Option {
+	//nolint:mnd //default values
 	return fx.Module(
 		"config",
 		fx.Provide(New, fx.Private),
@@ -55,6 +59,15 @@ func Module() fx.Option {
 			func(cfg Config) devices.Config {
 				return devices.Config{
 					Name: cfg.Device.Name,
+				}
+			},
+			func(cfg Config) sqlfx.Config {
+				return sqlfx.Config{
+					URL:             cfg.Database.URL,
+					ConnMaxIdleTime: 20 * time.Minute,
+					ConnMaxLifetime: time.Hour,
+					MaxOpenConns:    1,
+					MaxIdleConns:    1,
 				}
 			},
 		),

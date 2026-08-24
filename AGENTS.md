@@ -55,6 +55,15 @@
   bare-AT key (serve OK for both); wedged tests need a dedicated silent fake (never responds).
 - **Metrics**: Prometheus via fiberfx (auto), per-module counters via promauto
 
+## Database stack (messages MVP)
+- Persistence: SQLite via modernc.org/sqlite (pure Go, CGO_ENABLED=0) + go-core-fx {sqlfx v0.1.0, goosefx v0.0.1, bunfx v0.1.0} + bun v1.2.18
+- Bun SQLite dialect is a SEPARATE module: github.com/uptrace/bun/dialect/sqlitedialect (sqldialect does not exist); goose dialect DialectSQLite3 lives in pressly/goose/v3/database
+- internal/db/module.go owns ALL db bindings (dual dialects + goosefx.Storage(migrations.FS) + driver blank import) per go-project-template pattern
+- gochecknoglobals does NOT flag embed.FS vars; //nolint there fails nolintlint as unused
+- make fmt runs swag gen as side effect; golangci-lint fmt alone when swagger regen unwanted
+- musttag demands json tags on marshaled structs; godoclint bans duplicate package docs; exhaustruct requires embedded bun.BaseModel{} initialized in literals
+- Atomic states_json audit append: json_insert(states_json,'$[#]',json(?)) inside guarded UPDATE
+
 ## Module Conventions
 - Each package exposes Module(...) fx.Option (withRun bool for modules with background work)
 - Handlers registered via group tags: Provide(..., fx.ResultTags(`group:"handlers"`))
