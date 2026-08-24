@@ -129,6 +129,9 @@ data/
 dist/
 tmp/
 
+# Build output (make build)
+/bin/
+
 /configs/*
 !/configs/*.example.*
 

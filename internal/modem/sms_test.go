@@ -4,11 +4,15 @@ package modem
 import (
 	"context"
 	"errors"
+	"io"
+	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/warthog618/modem/at"
 )
 
@@ -402,5 +406,505 @@ func TestCommands_ExecMetrics_Drain(t *testing.T) {
 	// Duration observed for the failed +CSQ, the drain and the retried +CSQ.
 	if got := histogramCount(t, metrics.CommandDuration); got != 3 {
 		t.Fatalf("CommandDuration observations = %d, want 3", got)
+	}
+}
+
+// smsModem is a scripted fake port for the two-step AT+CMGS flow. The engine
+// writes "AT+CMGS=\"<phone>\"\r" (quoted destination per TS 27.005; carriage
+// return, no line feed) and, after the ">" prompt, the payload terminated by
+// Ctrl-Z (\x1a); the shared
+// scriptedModem harness cannot see those tokens (its scanner splits on LF
+// only), so this fake splits received bytes on CR, LF and Ctrl-Z. While a
+// payload is expected (after a ">" prompt was served) ONLY the Ctrl-Z
+// terminates the token, so multi-line texts stay byte-exact. The Ctrl-Z stays
+// part of the payload token, making byte-exact payload assertions possible.
+// Unknown keys stay silent (wedged fixtures).
+type smsModem struct {
+	mu        sync.Mutex
+	responses map[string][]string
+	received  []string
+
+	expectingPayload bool
+
+	rw    *pipePort
+	respW *io.PipeWriter
+	done  chan struct{}
+}
+
+func newSMSModem(responses map[string][]string) *smsModem {
+	cmdR, cmdW := io.Pipe()
+	respR, respW := io.Pipe()
+	m := &smsModem{
+		responses: responses,
+		rw:        &pipePort{r: respR, w: cmdW},
+		respW:     respW,
+		done:      make(chan struct{}),
+	}
+	go m.run(cmdR)
+
+	return m
+}
+
+func (m *smsModem) run(r *io.PipeReader) {
+	defer close(m.done)
+	buf := make([]byte, 0, 64)
+	one := make([]byte, 1)
+	lastCR := false
+	for {
+		n, err := r.Read(one)
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			continue
+		}
+		b := one[0]
+		if m.expectingPayload {
+			buf = append(buf, b)
+			if b == '\x1a' {
+				m.respond(string(buf))
+				buf = buf[:0]
+			}
+			continue
+		}
+		switch b {
+		case '\r':
+			m.respond(string(buf))
+			buf = buf[:0]
+		case '\n':
+			if !lastCR { // a CRLF pair is one token (the CR already fired)
+				m.respond(string(buf))
+				buf = buf[:0]
+			}
+		default:
+			buf = append(buf, b)
+		}
+		lastCR = b == '\r'
+	}
+}
+
+func (m *smsModem) respond(key string) {
+	m.mu.Lock()
+	m.received = append(m.received, key)
+	lines := m.responses[key]
+	m.mu.Unlock()
+
+	if len(lines) == 0 {
+		return // silent fixture (wedged command)
+	}
+
+	var b strings.Builder
+	gotPrompt := false
+	for _, line := range lines {
+		if line == ">" {
+			gotPrompt = true
+		}
+		b.WriteString(line)
+		b.WriteString("\r\n")
+	}
+	_, _ = m.respW.Write([]byte(b.String()))
+	m.expectingPayload = gotPrompt
+}
+
+// receivedCommands returns all tokens received so far (commands and payloads).
+func (m *smsModem) receivedCommands() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]string(nil), m.received...)
+}
+
+// close shuts the engine-facing port down; the modem goroutine exits on EOF.
+func (m *smsModem) close() {
+	_ = m.rw.Close()
+}
+
+// smsMetrics returns test metrics with the SMSSentTotal counter initialized
+// (newTestMetrics predates the send path; the field is wired here instead of
+// touching the shared helper).
+func smsMetrics() *Metrics {
+	m := newTestMetrics()
+	m.SMSSentTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "at_gateway_modem_sms_sent_total",
+		Help: "total SMS sent (test)",
+	})
+
+	return m
+}
+
+// newSMSCommands wires a Commands instance over the smsModem fake with the
+// full boot response table plus the given extra keys.
+func newSMSCommands(
+	t *testing.T,
+	extra map[string][]string,
+	cmdTimeout time.Duration,
+) (*Commands, *smsModem, *Metrics) {
+	t.Helper()
+	resp := defaultBootResponses()
+	maps.Copy(resp, extra)
+	m := newSMSModem(resp)
+	metrics := smsMetrics()
+	a := at.New(m.rw, at.WithTimeout(cmdTimeout))
+	t.Cleanup(m.close)
+	commands := NewCommands(a, metrics)
+	if err := commands.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	return commands, m, metrics
+}
+
+// TestCommands_SendSMS_Success pins the AT+CMGS success flow end-to-end: the
+// command line with the QUOTED phone number (TS 27.005: AT+CMGS="+7..."), the
+// ">" prompt, the payload (byte-exact including the Ctrl-Z terminator), the
+// +CMGS: <mr> parse and the SMSSentTotal increment. Wire keys are HARD-CODED
+// quoted literals, never derived from the implementation expression, so a
+// quoting regression fails the fixture. Phone and text pass through byte-exact
+// across input variations.
+func TestCommands_SendSMS_Success(t *testing.T) {
+	tests := []struct {
+		name   string
+		cmdKey string
+		phone  string
+		text   string
+		ref    int
+	}{
+		{name: "plain", cmdKey: `AT+CMGS="+79990001234"`, phone: "+79990001234", text: "Hello, world!", ref: 7},
+		{
+			name:   "multi-line",
+			cmdKey: `AT+CMGS="+15551234567"`,
+			phone:  "+15551234567",
+			text:   "line one\nline two\r\nline three",
+			ref:    1,
+		},
+		{
+			name:   "punctuation",
+			cmdKey: `AT+CMGS="88001234567"`,
+			phone:  "88001234567",
+			text:   "{}[]|~^\\\"@#$%&*",
+			ref:    42,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commands, m, metrics := newSMSCommands(t, map[string][]string{
+				tt.cmdKey:        {">"},
+				tt.text + "\x1a": {"+CMGS: " + strconv.Itoa(tt.ref), "OK"},
+			}, time.Second)
+
+			ref, err := commands.SendSMS(context.Background(), tt.phone, tt.text)
+			if err != nil {
+				t.Fatalf("SendSMS: %v", err)
+			}
+			if ref != tt.ref {
+				t.Fatalf("ref = %d, want %d", ref, tt.ref)
+			}
+
+			want := []string{wireAT, wireATE0, wireCMEE, wireCMGF, wireCNMI, wireCPINQuery, tt.cmdKey, tt.text + "\x1a"}
+			if got := m.receivedCommands(); !slicesEqual(got, want) {
+				t.Fatalf("commands = %q, want %q (payload must include Ctrl-Z)", got, want)
+			}
+			if got := counterValue(t, metrics.SMSSentTotal); got != 1 {
+				t.Fatalf("SMSSentTotal = %v, want 1", got)
+			}
+			if got := counterVecValue(t, metrics.CommandsTotal, "send SMS", "ok"); got != 1 {
+				t.Fatalf("CommandsTotal{send SMS,ok} = %v, want 1", got)
+			}
+		})
+	}
+}
+
+// TestCommands_SendSMS_WireFormatConformance pins the exact AT+CMGS wire
+// format on the fake: 3GPP TS 27.005 requires the destination address QUOTED
+// (AT+CMGS="+79990001234") - SIM800L rejects the unquoted form with +CMS
+// ERROR. The expected wire line is a HARD-CODED quoted literal (not derived
+// from the implementation expression), and the payload must arrive byte-identical.
+func TestCommands_SendSMS_WireFormatConformance(t *testing.T) {
+	const phone = "+79990001234"
+	const text = "Hello, world!"
+	commands, m, _ := newSMSCommands(t, map[string][]string{
+		`AT+CMGS="+79990001234"`: {">"},
+		text + "\x1a":            {"+CMGS: 7", "OK"},
+	}, time.Second)
+
+	ref, err := commands.SendSMS(context.Background(), phone, text)
+	if err != nil {
+		t.Fatalf("SendSMS: %v", err)
+	}
+	if ref != 7 {
+		t.Fatalf("ref = %d, want 7", ref)
+	}
+
+	want := []string{
+		wireAT,
+		wireATE0,
+		wireCMEE,
+		wireCMGF,
+		wireCNMI,
+		wireCPINQuery,
+		`AT+CMGS="+79990001234"`,
+		text + "\x1a",
+	}
+	if got := m.receivedCommands(); !slicesEqual(got, want) {
+		t.Fatalf("commands = %q, want %q (wire line must be AT+CMGS=\"+79990001234\", payload byte-exact)", got, want)
+	}
+}
+
+// TestCommands_SendSMS_PhoneHardening pins the pre-wire phone validation: a
+// phone containing a quote, CR or LF would corrupt the AT+CMGS command line,
+// so SendSMS rejects it with ErrInvalidPhone BEFORE any modem traffic.
+func TestCommands_SendSMS_PhoneHardening(t *testing.T) {
+	tests := []struct {
+		name  string
+		phone string
+	}{
+		{name: "quote", phone: `+7999"0001234`},
+		{name: "carriage return", phone: "+7999\r0001234"},
+		{name: "newline", phone: "+7999\n0001234"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commands, m, _ := newSMSCommands(t, nil, time.Second)
+
+			_, err := commands.SendSMS(context.Background(), tt.phone, "hi")
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !errors.Is(err, ErrInvalidPhone) {
+				t.Fatalf("error = %v, want ErrInvalidPhone", err)
+			}
+
+			want := []string{wireAT, wireATE0, wireCMEE, wireCMGF, wireCNMI, wireCPINQuery}
+			if got := m.receivedCommands(); !slicesEqual(got, want) {
+				t.Fatalf("commands = %q, want boot rows only (no send traffic for phone %q)", got, tt.phone)
+			}
+		})
+	}
+}
+
+// TestCommands_SendSMS_CMGSHeadLeakImmune pins the +CMGS: reference parser
+// against the v0.4.0 indication-head leak: a leaked head line carrying
+// "+CMGS:" as a MID-LINE SUBSTRING arrives as an unknown info line before the
+// legit +CMGS: response (no +CMT handler is registered in the SMS harness, so
+// the head leaks upstream). The parser must match ONLY lines actually
+// STARTING with "+CMGS:" (CutPrefix loop): the reference is parsed from the
+// prefixed line, never from the leak - neither a parse error (unparseable
+// substring) nor a false reference (numeric substring) may occur.
+func TestCommands_SendSMS_CMGSHeadLeakImmune(t *testing.T) {
+	const phone = "+79990001234"
+	const text = "Hello, world!"
+	const cmdKey = `AT+CMGS="+79990001234"`
+
+	tests := []struct {
+		name string
+		leak string
+	}{
+		{
+			name: "unparseable substring",
+			leak: `+CMT: "+CMGS:","123","24/08/26,12:00:00+00"`,
+		},
+		{
+			name: "numeric substring false-match bait",
+			leak: `+CMT: "x",+CMGS: 42`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commands, _, metrics := newSMSCommands(t, map[string][]string{
+				cmdKey:        {">"},
+				text + "\x1a": {tt.leak, "+CMGS: 7", "OK"},
+			}, time.Second)
+
+			ref, err := commands.SendSMS(context.Background(), phone, text)
+			if err != nil {
+				t.Fatalf("SendSMS: %v", err)
+			}
+			if ref != 7 {
+				t.Fatalf("ref = %d, want 7 (parsed only from the +CMGS: prefixed line, not leak %q)", ref, tt.leak)
+			}
+			if got := counterValue(t, metrics.SMSSentTotal); got != 1 {
+				t.Fatalf("SMSSentTotal = %v, want 1", got)
+			}
+		})
+	}
+}
+
+// TestCommands_SendSMS_CMSErrorMapped pins the +CMS ERROR mapping onto the
+// ErrSendFailed domain sentinel with the preserved tag prefix; no send counter
+// is incremented.
+func TestCommands_SendSMS_CMSErrorMapped(t *testing.T) {
+	const phone = "+79990001234"
+	const text = "Hello, world!"
+	commands, m, metrics := newSMSCommands(t, map[string][]string{
+		`AT+CMGS="+79990001234"`: {">"},
+		text + "\x1a":            {"+CMS ERROR: 332"},
+	}, time.Second)
+
+	_, err := commands.SendSMS(context.Background(), phone, text)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrSendFailed) {
+		t.Fatalf("error = %v, want ErrSendFailed", err)
+	}
+	if !strings.HasPrefix(err.Error(), "send SMS (AT+CMGS=\"+79990001234\"):") {
+		t.Fatalf("error %q does not carry the tag prefix", err)
+	}
+	if got := counterValue(t, metrics.SMSSentTotal); got != 0 {
+		t.Fatalf("SMSSentTotal = %v, want 0 (rejected send)", got)
+	}
+	if got := counterVecValue(t, metrics.CommandsTotal, "send SMS", "error"); got != 1 {
+		t.Fatalf("CommandsTotal{send SMS,error} = %v, want 1", got)
+	}
+
+	got := m.receivedCommands()
+	want := []string{
+		wireAT,
+		wireATE0,
+		wireCMEE,
+		wireCMGF,
+		wireCNMI,
+		wireCPINQuery,
+		`AT+CMGS="+79990001234"`,
+		text + "\x1a",
+	}
+	if !slicesEqual(got, want) {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+// TestCommands_SendSMS_CMSErrorCodePreserved pins the dual error wrap on the
+// send path: the +CMS ERROR code must stay [errors.As]-able (at.CMSError with
+// the numeric code) while ErrSendFailed stays [errors.Is]-able, and the message
+// carries the library "CMS Error: <code>" text (mapSMSError previously
+// swallowed the code).
+func TestCommands_SendSMS_CMSErrorCodePreserved(t *testing.T) {
+	const phone = "+79990001234"
+	const text = "Hello, world!"
+	commands, _, _ := newSMSCommands(t, map[string][]string{
+		`AT+CMGS="+79990001234"`: {">"},
+		text + "\x1a":            {"+CMS ERROR: 332"},
+	}, time.Second)
+
+	_, err := commands.SendSMS(context.Background(), phone, text)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrSendFailed) {
+		t.Fatalf("error = %v, want ErrSendFailed", err)
+	}
+	var cms at.CMSError
+	if !errors.As(err, &cms) {
+		t.Fatalf("error = %v, want errors.As to find at.CMSError", err)
+	}
+	if string(cms) != "332" {
+		t.Fatalf("CMS code = %q, want 332", string(cms))
+	}
+	if !strings.Contains(err.Error(), "CMS Error") {
+		t.Fatalf("error %q does not carry the library CMS Error text", err)
+	}
+}
+
+// TestCommands_SendSMS_DeadlineMappedAndDrain pins the timeout path: a silent
+// modem fails SendSMS with ErrModemTimeout, sets the lazy drain barrier, and
+// the next send drains (bare AT) before its own rows complete.
+func TestCommands_SendSMS_DeadlineMappedAndDrain(t *testing.T) {
+	const phone = "+79990001234"
+	const text = "Hello, world!"
+
+	// Wedged fake: no +CMGS keys, so the first send times out. The drain key
+	// "AT" is served by the boot table (DRAIN-KEY COLLISION, same as the
+	// shared harness).
+	commands, m, metrics := newSMSCommands(t, nil, 200*time.Millisecond)
+
+	_, err := commands.SendSMS(context.Background(), phone, text)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrModemTimeout) {
+		t.Fatalf("error = %v, want ErrModemTimeout", err)
+	}
+	if !strings.HasPrefix(err.Error(), "send SMS (AT+CMGS=\"+79990001234\"):") {
+		t.Fatalf("error %q does not carry the tag prefix", err)
+	}
+
+	// Recovered modem: the drain (bare AT) and the full +CMGS flow succeed.
+	m.mu.Lock()
+	m.responses[`AT+CMGS="+79990001234"`] = []string{">"}
+	m.responses[text+"\x1a"] = []string{"+CMGS: 7", "OK"}
+	m.mu.Unlock()
+
+	ref, sendErr := commands.SendSMS(context.Background(), phone, text)
+	if sendErr != nil {
+		t.Fatalf("SendSMS after drain: %v", sendErr)
+	}
+	if ref != 7 {
+		t.Fatalf("ref = %d, want 7", ref)
+	}
+
+	// First send: +CMGS command then the library's escape on timeout; second
+	// send: drain (bare AT), then the +CMGS command and the payload.
+	want := []string{
+		wireAT, wireATE0, wireCMEE, wireCMGF, wireCNMI, wireCPINQuery,
+		`AT+CMGS="+79990001234"`, "\x1b",
+		wireAT, `AT+CMGS="+79990001234"`, text + "\x1a",
+	}
+	if got := m.receivedCommands(); !slicesEqual(got, want) {
+		t.Fatalf("commands = %q, want %q (drain = bare AT after the escape)", got, want)
+	}
+	if got := counterVecValue(t, metrics.CommandsTotal, "send SMS", "error"); got != 1 {
+		t.Fatalf("CommandsTotal{send SMS,error} = %v, want 1 (timed-out send)", got)
+	}
+	if got := counterVecValue(t, metrics.CommandsTotal, "send SMS", "ok"); got != 1 {
+		t.Fatalf("CommandsTotal{send SMS,ok} = %v, want 1", got)
+	}
+	if got := counterVecValue(t, metrics.CommandsTotal, "", "ok"); got != 1 {
+		t.Fatalf("CommandsTotal{command=\"\",ok} = %v, want 1 (drain)", got)
+	}
+	if got := counterValue(t, metrics.SMSSentTotal); got != 1 {
+		t.Fatalf("SMSSentTotal = %v, want 1 (only the completed send)", got)
+	}
+}
+
+// TestCommands_SendSMS_CtxCanceledBeforeSend pins the ctx pre-check: a
+// canceled context fails the send before any modem traffic.
+func TestCommands_SendSMS_CtxCanceledBeforeSend(t *testing.T) {
+	commands, m, _ := newSMSCommands(t, nil, time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := commands.SendSMS(ctx, "+79990001234", "hi")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	want := []string{wireAT, wireATE0, wireCMEE, wireCMGF, wireCNMI, wireCPINQuery}
+	if got := m.receivedCommands(); !slicesEqual(got, want) {
+		t.Fatalf("commands = %q, want %q (no send traffic)", got, want)
+	}
+}
+
+// TestCommands_SendSMS_NotInitialized pins the initialization guard: sending
+// before a successful Init fails with ErrModemNotStarted and no traffic.
+func TestCommands_SendSMS_NotInitialized(t *testing.T) {
+	m := newSMSModem(defaultBootResponses())
+	commands := NewCommands(at.New(m.rw, at.WithTimeout(time.Second)), smsMetrics())
+	t.Cleanup(m.close)
+
+	_, err := commands.SendSMS(context.Background(), "+79990001234", "hi")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrModemNotStarted) {
+		t.Fatalf("error = %v, want ErrModemNotStarted", err)
+	}
+	if got := m.receivedCommands(); len(got) != 0 {
+		t.Fatalf("commands = %q, want none", got)
 	}
 }
