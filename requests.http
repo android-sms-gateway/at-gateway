@@ -105,8 +105,18 @@ GET {{baseURL}}/api/v1/messages?state=Sent HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
 ###
-# Invalid limit (abc parses to 0, below the 1..100 range) -> 400
+# Invalid limit parses to default 50 via Fiber QueryInt -> 200 (not 400)
 GET {{baseURL}}/api/v1/messages?limit=abc HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Below minimum limit -> 400 (below minimum 1)
+GET {{baseURL}}/api/v1/messages?limit=0 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Above maximum limit -> 400 (above maximum 100)
+GET {{baseURL}}/api/v1/messages?limit=101 HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
 ###

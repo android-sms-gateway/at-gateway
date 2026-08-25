@@ -5,6 +5,7 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/auth"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/go-core-fx/fiberfx"
@@ -59,6 +60,12 @@ func Module() fx.Option {
 			func(cfg Config) devices.Config {
 				return devices.Config{
 					Name: cfg.Device.Name,
+				}
+			},
+			func(cfg Config) messages.Config {
+				return messages.Config{
+					PollInterval: cfg.Messages.PollInterval,
+					DeviceID:     cfg.Messages.DeviceID,
 				}
 			},
 			func(cfg Config) sqlfx.Config {

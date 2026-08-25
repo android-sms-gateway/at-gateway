@@ -49,6 +49,11 @@ type databaseConfig struct {
 	URL string `koanf:"url"`
 }
 
+type messagesConfig struct {
+	PollInterval time.Duration `koanf:"poll_interval"`
+	DeviceID     string        `koanf:"device_id"`
+}
+
 type Config struct {
 	HTTP     http           `koanf:"http"`
 	Modem    modemConfig    `koanf:"modem"`
@@ -56,6 +61,7 @@ type Config struct {
 	Auth     authConfig     `koanf:"auth"`
 	Device   deviceConfig   `koanf:"device"`
 	Database databaseConfig `koanf:"database"`
+	Messages messagesConfig `koanf:"messages"`
 }
 
 func Default() Config {
@@ -91,6 +97,10 @@ func Default() Config {
 		},
 		Database: databaseConfig{
 			URL: "sqlite://data/gateway.db",
+		},
+		Messages: messagesConfig{
+			PollInterval: time.Second,
+			DeviceID:     "default",
 		},
 	}
 }

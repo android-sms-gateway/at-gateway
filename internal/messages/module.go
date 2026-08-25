@@ -6,16 +6,14 @@ import (
 	"go.uber.org/fx"
 )
 
-// Module returns the messages Fx module. Config is provided from package
-// defaults until the config-polish wave maps the MESSAGES__* env keys in
-// internal/config.
+// Module returns the messages Fx module. Config is provided by the config
+// module mapping (internal/config/module.go) from the MESSAGES__* env keys.
 func Module(withRun bool) fx.Option {
 	opts := []fx.Option{
 		logger.WithNamedLogger("messages"),
 
 		fx.Provide(NewMetrics, fx.Private),
 		fx.Provide(NewRepository),
-		fx.Provide(Default),
 		fx.Provide(New),
 	}
 
