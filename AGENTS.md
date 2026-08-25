@@ -68,6 +68,13 @@
 - musttag demands json tags on marshaled structs; godoclint bans duplicate package docs; exhaustruct requires embedded bun.BaseModel{} initialized in literals
 - Atomic states_json audit append: json_insert(states_json,'$[#]',json(?)) inside guarded UPDATE
 
+## Messages API (MVP)
+- messages.Service concrete (no interfaces per project rule): Enqueue/Get/List/Cancel -> smsgateway DTOs; GetMessagesResponse is plain []MessageState array
+- FIFO worker via fxutil.RegisterRunnable: Pending->Sent/Failed; cancel-safe pre-send Pending recheck; crash mid-send -> re-sent next boot
+- SendSMS reachable via *modem.Service.SendSMS wrapper (Commands unexported); quotes handled in Commands
+- Error bodies {"message","code"} (fiberfx ErrorResponse); 409 mapped but unreachable (service mints IDs)
+- serve exits ~10ms after start if serial port absent (fxutil runnable failure -> Shutdown) - attach modem or pty for boot testing
+
 ## Module Conventions
 - Each package exposes Module(...) fx.Option (withRun bool for modules with background work)
 - Handlers registered via group tags: Provide(..., fx.ResultTags(`group:"handlers"`))

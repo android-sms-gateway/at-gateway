@@ -48,3 +48,73 @@ Authorization: Basic sms:{{basicPassword}}
 ###
 DELETE {{baseURL}}/api/v1/devices/{{deviceID}} HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
+
+# ============================================================
+# 4. MESSAGES
+# ============================================================
+
+###
+# @name postMessage
+POST {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"Hello from at-gateway"}}
+
+###
+@messageID={{postMessage.response.body.$.id}}
+
+###
+# Non-ASCII text is rejected (printable 7-bit ASCII only) -> 400
+POST {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"привет"}}
+
+###
+# Text longer than 160 characters is rejected -> 400
+# (text below is 175 chars)
+POST {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"Example message body intentionally exceeding the one-hundred-and-sixty-character single-SMS limit so that the AT gateway responds with 400 Bad Request instead of enqueueing it"}}
+
+###
+# Empty phoneNumbers is rejected -> 400
+POST {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":[],"textMessage":{"text":"Hello"}}
+
+###
+# Poll message state by id; expect Pending -> Sent once the worker sends it
+GET {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# List messages; response is a plain JSON array, total count in X-Total-Count
+GET {{baseURL}}/api/v1/messages?limit=10 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Filter by state
+GET {{baseURL}}/api/v1/messages?state=Sent HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Invalid limit (abc parses to 0, below the 1..100 range) -> 400
+GET {{baseURL}}/api/v1/messages?limit=abc HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Cancel; 200 if still Pending, else 400 (not pending)
+DELETE {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# 401 Unauthorized
+GET {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:invalid
