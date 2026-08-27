@@ -479,7 +479,6 @@ func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) (int, 
 			if perr != nil {
 				return 0, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, perr)
 			}
-			c.metrics.SMSSentTotal.Inc()
 
 			return mr, nil
 		}

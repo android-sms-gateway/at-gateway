@@ -337,10 +337,6 @@ func (s *Service) handleCMT(info []string) {
 		return
 	}
 
-	// Counter-only inbound-SMS telemetry: messages remain discarded and the
-	// log stays DEBUG-redacted; no content/PII is captured.
-	s.metrics.SMSReceivedTotal.Inc()
-
 	s.logger.Debug("modem SMS received (ignored)", zap.String("scts", redactCMTHead(info[0])))
 }
 

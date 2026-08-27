@@ -6,13 +6,11 @@ import (
 )
 
 type Metrics struct {
-	CommandsTotal    *prometheus.CounterVec
-	CommandDuration  prometheus.Histogram
-	SMSSentTotal     prometheus.Counter
-	SMSReceivedTotal prometheus.Counter
-	ModemState       prometheus.Gauge
-	SignalQuality    prometheus.Gauge
-	ReconnectsTotal  prometheus.Counter
+	CommandsTotal   *prometheus.CounterVec
+	CommandDuration prometheus.Histogram
+	ModemState      prometheus.Gauge
+	SignalQuality   prometheus.Gauge
+	ReconnectsTotal prometheus.Counter
 }
 
 func NewMetrics() *Metrics {
@@ -29,18 +27,6 @@ func NewMetrics() *Metrics {
 				Name:    "at_gateway_modem_command_duration_seconds",
 				Help:    "Duration of AT commands in seconds",
 				Buckets: []float64{0.1, 0.5, 1, 2, 5},
-			},
-		),
-		SMSSentTotal: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "at_gateway_modem_sms_sent_total",
-				Help: "Total number of SMS sent",
-			},
-		),
-		SMSReceivedTotal: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "at_gateway_modem_sms_received_total",
-				Help: "Total number of SMS received",
 			},
 		),
 		ModemState: promauto.NewGauge(
