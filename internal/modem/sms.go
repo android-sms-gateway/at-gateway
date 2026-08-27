@@ -34,6 +34,9 @@ type Commands struct {
 	// stale response lines may still be queued; the next command call drains
 	// them first (lazy drain barrier).
 	pendingDrain bool
+	// initialized is set by a successful Init and gates the send path:
+	// SendSMS refuses to run against a modem that was never initialized.
+	initialized bool
 }
 
 // NewCommands creates a new Commands instance bound to the library AT handle.
@@ -44,6 +47,7 @@ func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 		metrics:      metrics,
 		mu:           sync.Mutex{},
 		pendingDrain: false,
+		initialized:  false,
 	}
 }
 
@@ -86,6 +90,10 @@ func (c *Commands) Init(ctx context.Context) error {
 			}
 		}
 	}
+
+	// The modem is ready for the send path only after the full sequence
+	// (incl. the +CPIN READY gate) completed.
+	c.initialized = true
 
 	return nil
 }
@@ -345,27 +353,44 @@ func (c *Commands) parseCSQ(raw string) (int, int, error) {
 // WEDGED GETSIMINFO ESTIMATES (pinned): persistent wedge worst case ~10s
 // (1 command timeout + 1 failed drain); recovering-modem case ~30s
 // (5 commands x 5s + 1 x 5s successful drain).
+// drainLocked runs one bare-AT drain command when the lazy drain barrier is
+// set; the caller must hold c.mu. It returns true when the drain timed out
+// (stale lines persist: the whole call must fail and the barrier stays set).
+// A non-deadline drain outcome clears the barrier (the ERROR status
+// terminates the response; residual stale lines fall into the documented
+// multi-line degradation class).
+func (c *Commands) drainLocked() bool {
+	if !c.pendingDrain {
+		return false
+	}
+
+	start := time.Now()
+	_, err := c.at.Command("")
+	c.metrics.CommandDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		// The drain is a bare AT command: label command "".
+		c.metrics.CommandsTotal.WithLabelValues("", "error").Inc()
+		if errors.Is(err, at.ErrDeadlineExceeded) {
+			// Stale lines persist: fail the whole call, keep the barrier.
+			return true
+		}
+		c.pendingDrain = false
+
+		return false
+	}
+
+	c.metrics.CommandsTotal.WithLabelValues("", "ok").Inc()
+	c.pendingDrain = false
+
+	return false
+}
+
 func (c *Commands) exec(cmd initCommand) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.pendingDrain {
-		start := time.Now()
-		_, err := c.at.Command("")
-		c.metrics.CommandDuration.Observe(time.Since(start).Seconds())
-		if err != nil {
-			// The drain is a bare AT command: label command "".
-			c.metrics.CommandsTotal.WithLabelValues("", "error").Inc()
-			if errors.Is(err, at.ErrDeadlineExceeded) {
-				// Stale lines persist: fail the whole call, keep the barrier.
-				return nil, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
-			}
-			// Non-deadline drain outcome: barrier cleared, drain error ignored.
-			c.pendingDrain = false
-		} else {
-			c.metrics.CommandsTotal.WithLabelValues("", "ok").Inc()
-			c.pendingDrain = false
-		}
+	if c.drainLocked() {
+		return nil, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
 	}
 
 	start := time.Now()
@@ -384,6 +409,9 @@ func (c *Commands) exec(cmd initCommand) ([]string, error) {
 
 // mapCommandError maps library errors onto domain errors, preserving the
 // "tag (cmd):" prefix so pre-swap lock tests (prefix + non-nil) stay green.
+// The generic-ERROR/+CME/+CMS branch keeps BOTH sentinels: ErrInitFailed stays
+// [errors.Is]-able AND the library error (at.CMEError/at.CMSError with its code)
+// stays [errors.As]-able via the trailing %w.
 func (c *Commands) mapCommandError(cmd initCommand, err error) error {
 	var cme at.CMEError
 	var cms at.CMSError
@@ -392,10 +420,116 @@ func (c *Commands) mapCommandError(cmd initCommand, err error) error {
 		c.pendingDrain = true
 		return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
 	case errors.Is(err, at.ErrError), errors.As(err, &cme), errors.As(err, &cms):
-		return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrInitFailed)
+		return fmt.Errorf("%s (%s): %w: %w", cmd.tag, cmd.display, ErrInitFailed, err)
 	default:
 		// ErrClosed and any other library error: tag-prefix wrap only, no
 		// sentinel mapping (ErrModemNotStarted untouched).
+		return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, err)
+	}
+}
+
+// SendSMS sends one text-mode SMS via AT+CMGS using the library's two-step
+// SMS flow: the command line with the QUOTED phone number (3GPP TS 27.005
+// requires <da> in quotes: AT+CMGS="+79990001234"; SIM800L rejects the
+// unquoted form with +CMS ERROR; the library passes the command through
+// verbatim), then - after the ">" prompt - the payload terminated by Ctrl-Z
+// (the library appends the 0x1A terminator itself; no raw port fallback is
+// needed). It returns the message reference <mr> parsed from the +CMGS
+// response.
+//
+// A phone containing a quote, CR or LF would corrupt the command line and is
+// rejected with ErrInvalidPhone before any modem traffic.
+//
+// Errors are mapped like the query path: a +CMS/+CME ERROR or generic ERROR
+// wraps ErrSendFailed (the +CMS/+CME code stays [errors.As]-able), a per-command
+// deadline wraps ErrModemTimeout and sets the lazy drain barrier (execSMS runs
+// through the same drain semantics as exec). The ctx is INERT per command (the
+// library has no context support): it is checked before the send only.
+//
+// SMSSentTotal is incremented ONLY when the +CMGS response yields a message
+// reference - a completed send, never a validation or queued message.
+func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("send SMS: %w", err)
+	}
+	if !c.initialized {
+		return 0, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
+	}
+	if strings.ContainsAny(phoneNumber, "\"\r\n") {
+		return 0, fmt.Errorf("send SMS: %w: phone %q must not contain quotes, CR or LF", ErrInvalidPhone, phoneNumber)
+	}
+
+	cmd := initCommand{
+		cmd:     "+CMGS=\"" + phoneNumber + "\"",
+		display: "AT+CMGS=\"" + phoneNumber + "\"",
+		tag:     "send SMS",
+	}
+	lines, err := c.execSMS(cmd, text)
+	if err != nil {
+		return 0, err
+	}
+	// The +CMGS: indication head can leak into this response as an unknown
+	// info line (v0.4.0 indLoop forwards heads after handlers; with CNMI
+	// active a +CMT head may precede our +CMGS line). Match ONLY lines that
+	// actually START with "+CMGS:" via CutPrefix, so a mid-line "+CMGS:"
+	// substring in a leaked head can never be parsed as the reference.
+	for _, line := range lines {
+		if suffix, ok := strings.CutPrefix(line, "+CMGS:"); ok {
+			mr, perr := strconv.Atoi(strings.TrimSpace(suffix))
+			if perr != nil {
+				return 0, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, perr)
+			}
+			c.metrics.SMSSentTotal.Inc()
+
+			return mr, nil
+		}
+	}
+
+	return 0, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, errNoCMGSLine)
+}
+
+// execSMS runs one SMS send command through the lazy drain barrier, mirroring
+// exec() but using the library's two-step SMS flow (SMSCommand: command line,
+// ">" prompt, payload + Ctrl-Z). Metrics follow exec() exactly: the send is
+// counted with its tag, the drain with the "" command label.
+func (c *Commands) execSMS(cmd initCommand, payload string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.drainLocked() {
+		return nil, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
+	}
+
+	start := time.Now()
+	lines, err := c.at.SMSCommand(cmd.cmd, payload)
+	c.metrics.CommandDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		c.metrics.CommandsTotal.WithLabelValues(cmd.tag, "error").Inc()
+
+		return nil, c.mapSMSError(cmd, err)
+	}
+
+	c.metrics.CommandsTotal.WithLabelValues(cmd.tag, "ok").Inc()
+
+	return lines, nil
+}
+
+// mapSMSError maps library SMS-command errors onto domain errors, preserving
+// the "tag (cmd):" prefix like mapCommandError. A deadline sets the lazy
+// drain barrier; a generic ERROR or +CMS/+CME ERROR wraps ErrSendFailed and
+// KEEPS the library error in the chain (trailing %w) so the +CMS/+CME code
+// stays [errors.As]-able.
+func (c *Commands) mapSMSError(cmd initCommand, err error) error {
+	var cme at.CMEError
+	var cms at.CMSError
+	switch {
+	case errors.Is(err, at.ErrDeadlineExceeded):
+		c.pendingDrain = true
+		return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
+	case errors.Is(err, at.ErrError), errors.As(err, &cme), errors.As(err, &cms):
+		return fmt.Errorf("%s (%s): %w: %w", cmd.tag, cmd.display, ErrSendFailed, err)
+	default:
+		// ErrClosed and any other library error: tag-prefix wrap only.
 		return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, err)
 	}
 }

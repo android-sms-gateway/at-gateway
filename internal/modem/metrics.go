@@ -8,6 +8,7 @@ import (
 type Metrics struct {
 	CommandsTotal    *prometheus.CounterVec
 	CommandDuration  prometheus.Histogram
+	SMSSentTotal     prometheus.Counter
 	SMSReceivedTotal prometheus.Counter
 	ModemState       prometheus.Gauge
 	SignalQuality    prometheus.Gauge
@@ -30,8 +31,12 @@ func NewMetrics() *Metrics {
 				Buckets: []float64{0.1, 0.5, 1, 2, 5},
 			},
 		),
-		// No SMS-send counter is registered: no send path exists (gsm/PDU
-		// deferred to the SMS phase); re-add it there with send-path wiring.
+		SMSSentTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_modem_sms_sent_total",
+				Help: "Total number of SMS sent",
+			},
+		),
 		SMSReceivedTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_modem_sms_received_total",

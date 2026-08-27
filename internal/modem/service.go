@@ -291,6 +291,23 @@ func (s *Service) SignalUpdate(ctx context.Context) {
 	s.mu.Unlock()
 }
 
+// SendSMS sends one text-mode SMS through the active Commands handle,
+// mirroring SignalUpdate's identity-snapshot pattern: a nil Commands
+// (disconnected or still connecting) maps to ErrModemNotStarted. The ctx is
+// INERT per command (see Commands.SendSMS). This wrapper is the public send
+// entrypoint consumed by the messages worker.
+func (s *Service) SendSMS(ctx context.Context, phoneNumber, text string) (int, error) {
+	s.mu.RLock()
+	commands := s.commands
+	s.mu.RUnlock()
+
+	if commands == nil {
+		return 0, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
+	}
+
+	return commands.SendSMS(ctx, phoneNumber, text)
+}
+
 // cmtRedacted is the deterministic no-PII marker logged when a +CMT head line
 // carries no parseable SCTS timestamp.
 const cmtRedacted = "<redacted>"
