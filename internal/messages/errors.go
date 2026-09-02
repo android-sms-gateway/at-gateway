@@ -23,4 +23,9 @@ var (
 	// ErrInvalidPhoneNumbers is returned when the message carries no phone
 	// numbers or contains an empty one.
 	ErrInvalidPhoneNumbers = errors.New("message must contain at least one non-empty phone number")
+
+	// ErrMissingExtID is returned when Create receives a message without an
+	// ext_id. The service is the sole ext_id generator and must set it before
+	// Create; this sentinel is the repository's defensive guard.
+	ErrMissingExtID = errors.New("message ext_id is required")
 )

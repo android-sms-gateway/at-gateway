@@ -16,8 +16,13 @@ import (
 )
 
 const (
-	condByID    = "id = ?"
+	// condByExtID addresses messages by their public ext_id (the wire ID);
+	// the integer PK stays internal.
+	condByExtID = "ext_id = ?"
 	condByState = "state = ?"
+	// condByMessage addresses recipients of the message with the given
+	// ext_id through a subquery on the messages table.
+	condByMessage = "message_id = (SELECT id FROM messages WHERE ext_id = ?)"
 
 	orderAscending  = "created_at ASC, id ASC"
 	orderDescending = "created_at DESC, id DESC"
@@ -38,6 +43,11 @@ func NewRepository(db *bun.DB) *Repository {
 	return &Repository{db: db}
 }
 
+// Create persists a message and all its recipients in one transaction. An
+// already-known ext_id yields ErrAlreadyExists; a duplicated recipient pair
+// rolls the whole transaction back and yields ErrDuplicateRecipient. The
+// service is the sole ext_id generator, so an empty ExtID is rejected with
+// ErrMissingExtID before any database work.
 func (r *Repository) Create(ctx context.Context, msg *MessageInput) error {
 	now := time.Now().UTC()
 	model, err := newMessageModel(msg, now)
@@ -55,6 +65,9 @@ func (r *Repository) Create(ctx context.Context, msg *MessageInput) error {
 		}
 
 		recipientModels := newRecipientModels(msg.PhoneNumbers, model.ID, now)
+		if len(recipientModels) == 0 {
+			return nil
+		}
 
 		if _, insertErr := tx.NewInsert().Model(&recipientModels).Exec(ctx); insertErr != nil {
 			if isDuplicateConstraint(insertErr) {
@@ -73,12 +86,16 @@ func (r *Repository) Create(ctx context.Context, msg *MessageInput) error {
 	return nil
 }
 
-// GetByID returns the message with the given ID and its recipients, or
+// GetByID returns the message with the given ext_id and its recipients, or
 // ErrNotFound.
 func (r *Repository) GetByID(ctx context.Context, id string) (*Message, error) {
 	model := new(messageModel)
 
-	err := r.db.NewSelect().Model(model).Where(condByID, id).Scan(ctx)
+	err := r.db.NewSelect().
+		Model(model).
+		Relation("Recipients", orderRecipients).
+		Where(condByExtID, id).
+		Scan(ctx)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
@@ -86,7 +103,12 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Message, error) {
 		return nil, fmt.Errorf("select message: %w", err)
 	}
 
-	return r.getMessage(ctx, model)
+	message, err := model.toDomain()
+	if err != nil {
+		return nil, fmt.Errorf("map message: %w", err)
+	}
+
+	return message, nil
 }
 
 // List returns one page of messages (with recipients) ordered by created_at
@@ -98,7 +120,9 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]Message, in
 	}
 
 	models := make([]messageModel, 0)
-	query := r.db.NewSelect().Model(&models)
+	query := r.db.NewSelect().
+		Model(&models).
+		Relation("Recipients", orderRecipients)
 	if filter.State != nil {
 		query = query.Where(condByState, string(*filter.State))
 	}
@@ -116,14 +140,9 @@ func (r *Repository) List(ctx context.Context, filter ListFilter) ([]Message, in
 		return nil, 0, fmt.Errorf("list messages: %w", scanErr)
 	}
 
-	recipientsByMessage, err := r.selectRecipientsForMessages(ctx, models)
-	if err != nil {
-		return nil, 0, err
-	}
-
 	result := make([]Message, 0, len(models))
 	for i := range models {
-		item, convErr := models[i].toDomain("", recipientsByMessage[models[i].ID])
+		item, convErr := models[i].toDomain()
 		if convErr != nil {
 			return nil, 0, fmt.Errorf("map listed message: %w", convErr)
 		}
@@ -140,6 +159,7 @@ func (r *Repository) GetNextPending(ctx context.Context) (*Message, error) {
 
 	err := r.db.NewSelect().
 		Model(model).
+		Relation("Recipients", orderRecipients).
 		Where(condByState, string(smsgateway.ProcessingStatePending)).
 		OrderExpr(orderAscending).
 		Limit(nextPendingLimit).
@@ -151,7 +171,12 @@ func (r *Repository) GetNextPending(ctx context.Context) (*Message, error) {
 		return nil, fmt.Errorf("select next pending message: %w", err)
 	}
 
-	return r.getMessage(ctx, model)
+	message, err := model.toDomain()
+	if err != nil {
+		return nil, fmt.Errorf("map message: %w", err)
+	}
+
+	return message, nil
 }
 
 // SetRecipientRef stores the send reference of one recipient; ErrNotFound
@@ -160,7 +185,7 @@ func (r *Repository) SetRecipientRef(ctx context.Context, messageID, phone strin
 	res, err := r.db.NewUpdate().
 		Model((*recipientModel)(nil)).
 		Set("ref_id = ?", refID).
-		Where("message_id = ?", messageID).
+		Where(condByMessage, messageID).
 		Where("phone = ?", phone).
 		Exec(ctx)
 	if err != nil {
@@ -199,7 +224,7 @@ func (r *Repository) UpdateRecipientState(
 		Model((*recipientModel)(nil)).
 		Set("states = json_insert(states, '$[#]', json(?))", string(entry)).
 		Set("error = ?", errStr).
-		Where("message_id = ?", messageID).
+		Where(condByMessage, messageID).
 		Where("phone = ?", phone).
 		Where("(json_extract(states, '$[#-1].state') IS NULL OR json_extract(states, '$[#-1].state') <> ?)",
 			string(smsgateway.ProcessingStateFailed))
@@ -245,7 +270,7 @@ func (r *Repository) AppendMessageState(ctx context.Context, id string, state sm
 		Set("state = ?", string(state)).
 		Set("updated_at = ?", now).
 		Set(statesAppendExpr, string(entry)).
-		Where(condByID, id).
+		Where(condByExtID, id).
 		Where("state <> ?", string(smsgateway.ProcessingStateFailed)).
 		Exec(ctx)
 	if err != nil {
@@ -294,7 +319,7 @@ func (r *Repository) Cancel(ctx context.Context, id string) (*Message, error) {
 		if _, recipientErr := tx.NewUpdate().
 			Model((*recipientModel)(nil)).
 			Set(statesAppendExpr, string(entry)).
-			Where("message_id = ?", id).
+			Where(condByMessage, id).
 			Exec(ctx); recipientErr != nil {
 			return fmt.Errorf("cancel recipients: %w", recipientErr)
 		}
@@ -314,6 +339,12 @@ func (r *Repository) Cancel(ctx context.Context, id string) (*Message, error) {
 	return result, nil
 }
 
+// orderRecipients makes relation loading deterministic: recipients are
+// returned in insertion order.
+func orderRecipients(q *bun.SelectQuery) *bun.SelectQuery {
+	return q.OrderExpr("id ASC")
+}
+
 // cancelMessage runs the guarded Pending->Cancelled UPDATE and returns the
 // number of affected rows.
 func (r *Repository) cancelMessage(ctx context.Context, tx bun.Tx, id, entry string) (int64, error) {
@@ -322,7 +353,7 @@ func (r *Repository) cancelMessage(ctx context.Context, tx bun.Tx, id, entry str
 		Set("state = ?", string(smsgateway.ProcessingStateCancelled)).
 		Set("updated_at = ?", time.Now().UTC()).
 		Set(statesAppendExpr, entry).
-		Where(condByID, id).
+		Where(condByExtID, id).
 		Where(condByState, string(smsgateway.ProcessingStatePending)).
 		Exec(ctx)
 	if execErr != nil {
@@ -342,7 +373,7 @@ func (r *Repository) cancelMessage(ctx context.Context, tx bun.Tx, id, entry str
 func (r *Repository) cancelGuardError(ctx context.Context, tx bun.Tx, id string) error {
 	exists, existsErr := tx.NewSelect().
 		Model((*messageModel)(nil)).
-		Where(condByID, id).
+		Where(condByExtID, id).
 		Exists(ctx)
 	if existsErr != nil {
 		return fmt.Errorf("inspect cancelled message: %w", existsErr)
@@ -358,85 +389,20 @@ func (r *Repository) cancelGuardError(ctx context.Context, tx bun.Tx, id string)
 // and maps it to the domain.
 func (r *Repository) loadMessageTx(ctx context.Context, tx bun.Tx, id string) (*Message, error) {
 	model := new(messageModel)
-	if selectErr := tx.NewSelect().Model(model).Where(condByID, id).Scan(ctx); selectErr != nil {
+	if selectErr := tx.NewSelect().
+		Model(model).
+		Relation("Recipients", orderRecipients).
+		Where(condByExtID, id).
+		Scan(ctx); selectErr != nil {
 		return nil, fmt.Errorf("select cancelled message: %w", selectErr)
 	}
 
-	recipients := make([]recipientModel, 0)
-	if selectErr := tx.NewSelect().
-		Model(&recipients).
-		Where("message_id = ?", id).
-		OrderExpr("phone ASC").
-		Scan(ctx); selectErr != nil {
-		return nil, fmt.Errorf("select cancelled recipients: %w", selectErr)
-	}
-
-	message, mapErr := model.toDomain("", recipients)
+	message, mapErr := model.toDomain()
 	if mapErr != nil {
 		return nil, fmt.Errorf("map cancelled message: %w", mapErr)
 	}
 
 	return message, nil
-}
-
-// getMessage loads the recipients of model and maps both to the domain.
-func (r *Repository) getMessage(ctx context.Context, model *messageModel) (*Message, error) {
-	recipients, err := r.selectRecipients(ctx, model.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	message, err := model.toDomain("", recipients)
-	if err != nil {
-		return nil, fmt.Errorf("map message: %w", err)
-	}
-
-	return message, nil
-}
-
-func (r *Repository) selectRecipients(ctx context.Context, messageID int64) ([]recipientModel, error) {
-	recipients := make([]recipientModel, 0)
-	if err := r.db.NewSelect().
-		Model(&recipients).
-		Where("message_id = ?", messageID).
-		OrderExpr("id ASC").
-		Scan(ctx); err != nil {
-		return nil, fmt.Errorf("select recipients: %w", err)
-	}
-
-	return recipients, nil
-}
-
-// selectRecipientsForMessages loads the recipients of all models in one
-// query and groups them by message ID.
-func (r *Repository) selectRecipientsForMessages(
-	ctx context.Context,
-	models []messageModel,
-) (map[int64][]recipientModel, error) {
-	result := make(map[int64][]recipientModel, len(models))
-	if len(models) == 0 {
-		return result, nil
-	}
-
-	ids := make([]int64, 0, len(models))
-	for i := range models {
-		ids = append(ids, models[i].ID)
-	}
-
-	recipients := make([]recipientModel, 0)
-	if err := r.db.NewSelect().
-		Model(&recipients).
-		Where("message_id IN (?)", bun.List(ids)).
-		OrderExpr("phone ASC").
-		Scan(ctx); err != nil {
-		return nil, fmt.Errorf("select recipients: %w", err)
-	}
-
-	for i := range recipients {
-		result[recipients[i].MessageID] = append(result[recipients[i].MessageID], recipients[i])
-	}
-
-	return result, nil
 }
 
 func (r *Repository) count(ctx context.Context, state *smsgateway.ProcessingState) (int, error) {
@@ -456,7 +422,7 @@ func (r *Repository) count(ctx context.Context, state *smsgateway.ProcessingStat
 func (r *Repository) messageExists(ctx context.Context, id string) (bool, error) {
 	exists, err := r.db.NewSelect().
 		Model((*messageModel)(nil)).
-		Where(condByID, id).
+		Where(condByExtID, id).
 		Exists(ctx)
 	if err != nil {
 		return false, fmt.Errorf("check message existence: %w", err)
@@ -468,7 +434,7 @@ func (r *Repository) messageExists(ctx context.Context, id string) (bool, error)
 func (r *Repository) recipientExists(ctx context.Context, messageID, phone string) (bool, error) {
 	exists, err := r.db.NewSelect().
 		Model((*recipientModel)(nil)).
-		Where("message_id = ?", messageID).
+		Where(condByMessage, messageID).
 		Where("phone = ?", phone).
 		Exists(ctx)
 	if err != nil {

@@ -6,6 +6,31 @@ import (
 	"github.com/samber/lo"
 )
 
+// MessageInputFromDTO maps a wire message onto the domain input. The mapping
+// is a pure wire-shape conversion: all business validation lives in
+// messages.Service.Enqueue; the HTTP edge performs only go-playground/validator
+// schema validation of the wire DTO via the validation middleware.
+func MessageInputFromDTO(req *smsgateway.Message) *messages.MessageInput {
+	return &messages.MessageInput{
+		MessageContent: messages.MessageContent{
+			TextContent: req.TextMessage,
+			DataContent: req.DataMessage,
+		},
+		MessageOptions: messages.MessageOptions{
+			SimNumber:          req.SimNumber,
+			WithDeliveryReport: req.WithDeliveryReport,
+			TTL:                req.TTL,
+			ValidUntil:         req.ValidUntil,
+			ScheduleAt:         req.ScheduleAt,
+			Priority:           req.Priority,
+		},
+		ExtID:        req.ID,
+		DeviceID:     lo.EmptyableToPtr(req.DeviceID),
+		PhoneNumbers: req.PhoneNumbers,
+		IsEncrypted:  req.IsEncrypted,
+	}
+}
+
 func messageToState(m *messages.Message) smsgateway.MessageState {
 	return smsgateway.MessageState{
 		ID:          m.ID,

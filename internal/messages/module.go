@@ -13,7 +13,7 @@ func Module(withRun bool) fx.Option {
 		logger.WithNamedLogger("messages"),
 
 		fx.Provide(NewMetrics, fx.Private),
-		fx.Provide(NewRepository),
+		fx.Provide(NewRepository, fx.Private),
 		fx.Provide(NewService),
 	}
 

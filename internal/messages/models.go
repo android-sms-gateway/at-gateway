@@ -49,12 +49,12 @@ type messageModel struct {
 	db.TimedModel
 
 	ID    int64  `bun:"id,pk,autoincrement"`
-	ExtID string `bun:"ext_id"`
+	ExtID string `bun:"ext_id,notnull"`
 
 	Type    ContentType `bun:"type,notnull"`
 	Content string      `bun:"content,notnull"`
 
-	Priority    int          `bun:"priority,notnull"`
+	Priority    int8         `bun:"priority,notnull"`
 	IsEncrypted bool         `bun:"is_encrypted,notnull"`
 	ValidUntil  *time.Time   `bun:"valid_until"`
 	ScheduleAt  *time.Time   `bun:"schedule_at"`
@@ -63,11 +63,14 @@ type messageModel struct {
 	State    smsgateway.ProcessingState `bun:"state,notnull"`
 	States   statesModel                `bun:"states,notnull"`
 	IsHashed bool                       `bun:"is_hashed,notnull"`
+
+	Recipients []recipientModel `bun:"rel:has-many,join:id=message_id"`
 }
 
 // newMessageModel maps a domain message onto the persisted model. The states
 // history is initialized with a single entry that matches the state column
-// (the sync invariant), and the message timestamps are set to now.
+// (the sync invariant), and the message timestamps are set to now. ExtID is
+// required input - the service generates it before Create.
 func newMessageModel(msg *MessageInput, now time.Time) (*messageModel, error) {
 	contentType, content, err := msg.Content()
 	if err != nil {
@@ -84,7 +87,7 @@ func newMessageModel(msg *MessageInput, now time.Time) (*messageModel, error) {
 		ExtID:       msg.ExtID,
 		Type:        contentType,
 		Content:     content,
-		Priority:    int(msg.Priority),
+		Priority:    int8(msg.Priority),
 		IsEncrypted: msg.IsEncrypted,
 		IsHashed:    false,
 		State:       smsgateway.ProcessingStatePending,
@@ -97,6 +100,7 @@ func newMessageModel(msg *MessageInput, now time.Time) (*messageModel, error) {
 		States: statesModel{
 			{State: smsgateway.ProcessingStatePending, At: now},
 		},
+		Recipients: nil,
 	}
 
 	return model, nil
@@ -150,7 +154,7 @@ func (m *messageModel) messageContent() (MessageStateContent, error) {
 
 // toDomain maps the persisted message model onto the domain message. The
 // device ID is not persisted and must be supplied by the caller.
-func (m *messageModel) toDomain(deviceID string, recipients []recipientModel) (*Message, error) {
+func (m *messageModel) toDomain() (*Message, error) {
 	content, err := m.messageContent()
 	if err != nil {
 		return nil, err
@@ -158,7 +162,8 @@ func (m *messageModel) toDomain(deviceID string, recipients []recipientModel) (*
 
 	var ttl *uint64
 	if m.ValidUntil != nil {
-		ttl = lo.ToPtr(uint64(time.Duration(m.ValidUntil.Sub(m.CreatedAt).Seconds())))
+		remaining := max(m.ValidUntil.Sub(m.CreatedAt), 0)
+		ttl = lo.ToPtr(uint64(remaining / time.Second))
 	}
 
 	message := &Message{
@@ -173,11 +178,11 @@ func (m *messageModel) toDomain(deviceID string, recipients []recipientModel) (*
 		},
 		ID:    m.ExtID,
 		State: m.State,
-		Recipients: lo.Map(recipients, func(recipient recipientModel, _ int) Recipient {
+		Recipients: lo.Map(m.Recipients, func(recipient recipientModel, _ int) Recipient {
 			return recipient.toDomain()
 		}),
 		States:      m.States.toDomainMap(),
-		DeviceID:    deviceID,
+		DeviceID:    "",
 		IsHashed:    m.IsHashed,
 		IsEncrypted: m.IsEncrypted,
 	}

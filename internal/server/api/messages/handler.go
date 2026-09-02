@@ -11,7 +11,6 @@ import (
 	"github.com/go-core-fx/fiberfx/validation"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
-	"github.com/samber/lo"
 	"go.uber.org/zap"
 )
 
@@ -28,7 +27,13 @@ type Handler struct {
 	logger *zap.Logger
 }
 
-func NewHandler(messagesSvc *messages.Service, logger *zap.Logger, validator *validator.Validate) handler.Handler {
+// NewHandler wires the messages endpoints to the service layer, which owns
+// all business validation and the background send worker.
+func NewHandler(
+	messagesSvc *messages.Service,
+	logger *zap.Logger,
+	validator *validator.Validate,
+) handler.Handler {
 	return &Handler{
 		Base: handler.Base{
 			Validator: validator,
@@ -156,26 +161,9 @@ func (h *Handler) get(c *fiber.Ctx) error {
 //	@Header			202		{string}	Location						"Get message state URL"
 //	@Router			/messages [post]
 func (h *Handler) post(c *fiber.Ctx, req *smsgateway.Message) error {
-	input := messages.MessageInput{
-		MessageContent: messages.MessageContent{
-			TextContent: req.TextMessage,
-			DataContent: req.DataMessage,
-		},
-		MessageOptions: messages.MessageOptions{
-			SimNumber:          req.SimNumber,
-			WithDeliveryReport: req.WithDeliveryReport,
-			TTL:                req.TTL,
-			ValidUntil:         req.ValidUntil,
-			ScheduleAt:         req.ScheduleAt,
-			Priority:           req.Priority,
-		},
-		ExtID:        req.ID,
-		DeviceID:     lo.EmptyableToPtr(req.DeviceID),
-		PhoneNumbers: req.PhoneNumbers,
-		IsEncrypted:  req.IsEncrypted,
-	}
+	input := MessageInputFromDTO(req)
 
-	state, err := h.messagesSvc.Enqueue(c.Context(), input)
+	state, err := h.messagesSvc.Enqueue(c.Context(), *input)
 	if err != nil {
 		return fmt.Errorf("enqueue message: %w", err)
 	}
@@ -216,10 +204,16 @@ func (h *Handler) handleError(c *fiber.Ctx) error {
 	switch {
 	case errors.Is(err, messages.ErrNotSupported),
 		errors.Is(err, messages.ErrInvalidText),
-		errors.Is(err, messages.ErrInvalidPhoneNumbers):
+		errors.Is(err, messages.ErrInvalidPhoneNumbers),
+		errors.Is(err, messages.ErrInvalidContent),
+		errors.Is(err, messages.ErrMissingExtID):
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
-	case errors.Is(err, messages.ErrAlreadyExists):
+	case errors.Is(err, messages.ErrAlreadyExists),
+		errors.Is(err, messages.ErrDuplicateRecipient),
+		errors.Is(err, messages.ErrNotPending):
 		return fiber.NewError(fiber.StatusConflict, err.Error())
+	case errors.Is(err, messages.ErrNotFound):
+		return fiber.NewError(fiber.StatusNotFound, err.Error())
 	default:
 		return err //nolint:wrapcheck // err is already wrapped
 	}
