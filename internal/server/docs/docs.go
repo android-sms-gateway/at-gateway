@@ -316,14 +316,14 @@ const docTemplate = `{
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "Start date in RFC3339 format",
+                        "description": "Start date in RFC3339 format (ignored in MVP)",
                         "name": "from",
                         "in": "query"
                     },
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "End date in RFC3339 format",
+                        "description": "End date in RFC3339 format (ignored in MVP)",
                         "name": "to",
                         "in": "query"
                     },
@@ -346,7 +346,7 @@ const docTemplate = `{
                         "maxLength": 21,
                         "minLength": 21,
                         "type": "string",
-                        "description": "Filter by device ID",
+                        "description": "Filter by device ID (ignored in MVP)",
                         "name": "deviceId",
                         "in": "query"
                     },
@@ -369,7 +369,7 @@ const docTemplate = `{
                     {
                         "type": "boolean",
                         "default": false,
-                        "description": "Include textMessage/dataMessage content for each message. Default is false",
+                        "description": "Include textMessage/dataMessage content for each message (ignored in MVP)",
                         "name": "includeContent",
                         "in": "query"
                     },
@@ -428,7 +428,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Enqueues a message for sending. If ` + "`" + `deviceId` + "`" + ` is set, the specified device is used; otherwise a random registered device is chosen.",
+                "description": "Enqueues a message for sending. The single registered device is used; ` + "`" + `deviceId` + "`" + ` is accepted but ignored.",
                 "consumes": [
                     "application/json"
                 ],
@@ -441,20 +441,6 @@ const docTemplate = `{
                 ],
                 "summary": "Enqueue message",
                 "parameters": [
-                    {
-                        "type": "boolean",
-                        "description": "Skip phone validation",
-                        "name": "skipPhoneValidation",
-                        "in": "query"
-                    },
-                    {
-                        "minimum": 0,
-                        "type": "integer",
-                        "default": 0,
-                        "description": "Filter devices active within the specified number of hours",
-                        "name": "deviceActiveWithin",
-                        "in": "query"
-                    },
                     {
                         "description": "Send message request",
                         "name": "request",
@@ -504,12 +490,6 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal server error",
-                        "schema": {
-                            "$ref": "#/definitions/smsgateway.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Queue limits exceeded; ensure device is online",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }

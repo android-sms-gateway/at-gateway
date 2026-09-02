@@ -20,7 +20,7 @@
 - **Modem**: AT command serial modem (SIM800L and similar) via github.com/warthog618/modem v0.4.0 (pkg at) over internal/modem/port (go.bug.st/serial v1.8.0)
 - **Modem internals**: internal/modem/ = Service state machine + Commands; init verbatim AT/ATE0/+CMEE=1/+CMGF=1/+CNMI=2,1,0,0,0/+CPIN? READY; lazy stale-response barrier; single-goroutine init abort on initCtx; port/ kept
 - **Modem notes**: lib is ctx-free - per-command timeout via at.WithTimeout(effectiveCmdTimeout), ctx checked between commands; +CMT handler log-only (DEBUG redacted, body never logged; SMS receive = future gsm phase)
-- **Modem telemetry (post-migration cleanup 2026-08-20)**: /metrics = 2 gauges (at_gateway_modem_state 0=disconnected,1=connecting,2=ready,3=error - StateBusy REMOVED, error remapped 4->3; at_gateway_modem_signal_quality_percent) + 3 counters (at_gateway_modem_commands_total labels command/status - command=initCommand tag, "" for bare AT/drain, status=ok|error; at_gateway_modem_sms_received_total - +CMT counter only, no PII; at_gateway_modem_reconnects_total - connect attempts) + 1 histogram (at_gateway_modem_command_duration_seconds, observed in Commands.exec() - the single choke point). SMSSentTotal REMOVED (no send path exists); re-add it WITH real send-path wiring in the SMS phase (registration copy in git history 017319a). NewCommands(at *at.AT, metrics *Metrics) - metrics REQUIRED non-nil. Signal telemetry refreshes via a Run ticker: unexported signalRefreshInterval, default 60s, zero = disabled, NO config/env key; Run LOOPS on the tick channel (ticks repeat; only ctx.Done()/at.Closed() exit Run); ticker.Stop on Run exit; SignalUpdate keeps its post-query staleness guard. StateBusy + ErrPortBusy REMOVED (never set / definition-only). CommandTimeout <= 0 maps to the 5s fallback at at.New (library WithTimeout(0) = IMMEDIATE timeout); InitTimeout <= 0 = immediate abort (no fallback) - both per the migration-plan pins, verified by debugger evidence at HEAD (edge tests failed 22/22 pre-fix).
+- **Modem telemetry (post-migration cleanup 2026-08-20)**: /metrics = 2 gauges (at_gateway_modem_state 0=disconnected,1=connecting,2=ready,3=error - StateBusy REMOVED, error remapped 4->3; at_gateway_modem_signal_quality_percent) + 3 counters (at_gateway_modem_commands_total labels command/status - command=initCommand tag, "" for bare AT/drain, status=ok|error; at_gateway_modem_sms_received_total - +CMT counter only, no PII; at_gateway_modem_reconnects_total - connect attempts) + 1 histogram (at_gateway_modem_command_duration_seconds, observed in Commands.exec() - the single choke point). SMSSentTotal RE-ADDED and wired (increment on +CMGS success only). NewCommands(at *at.AT, metrics *Metrics) - metrics REQUIRED non-nil. Signal telemetry refreshes via a Run ticker: unexported signalRefreshInterval, default 60s, zero = disabled, NO config/env key; Run LOOPS on the tick channel (ticks repeat; only ctx.Done()/at.Closed() exit Run); ticker.Stop on Run exit; SignalUpdate keeps its post-query staleness guard. StateBusy + ErrPortBusy REMOVED (never set / definition-only). CommandTimeout <= 0 maps to the 5s fallback at at.New (library WithTimeout(0) = IMMEDIATE timeout); InitTimeout <= 0 = immediate abort (no fallback) - both per the migration-plan pins, verified by debugger evidence at HEAD (edge tests failed 22/22 pre-fix).
 
 ## warthog618/modem Gotchas
 - Library is ctx-free: per-command timeout = at.WithTimeout(effectiveCmdTimeout) at at.New (0=immediate,
@@ -53,7 +53,27 @@
   -json / the cached .mod file.
 - Scripted-modem harness: command-keyed/table-driven fake; drain Command("") collides with init row-1
   bare-AT key (serve OK for both); wedged tests need a dedicated silent fake (never responds).
+- +CMGS: parse MUST use strings.CutPrefix loop (head-leak immune); at.SMSCommand expresses the full CMGS flow incl. Ctrl-Z; SMSCommand timeout sends ESC+arms 20ms escGuard; CLI one-shot `send` command exists (internal/commands/send).
+- +CMGS needs QUOTED number: AT+CMGS="+number" (library SMSCommand is verbatim passthrough); phone must be hardened against \" \r \n before the wire
+- Wire-conformance tests must hard-code quoted keys — deriving keys from implementation expressions lets fakes mirror bugs
+- mapSMSError/mapCommandError dual-wrap %w: %w keeps sentinel errors.Is-able AND library CMSError/CMEError codes errors.As-able
 - **Metrics**: Prometheus via fiberfx (auto), per-module counters via promauto
+
+## Database stack (messages MVP)
+- Persistence: SQLite via modernc.org/sqlite (pure Go, CGO_ENABLED=0) + go-core-fx {sqlfx v0.1.0, goosefx v0.0.1, bunfx v0.1.0} + bun v1.2.18
+- Bun SQLite dialect is a SEPARATE module: github.com/uptrace/bun/dialect/sqlitedialect (sqldialect does not exist); goose dialect DialectSQLite3 lives in pressly/goose/v3/database
+- internal/db/module.go owns ALL db bindings (dual dialects + goosefx.Storage(migrations.FS) + driver blank import) per go-project-template pattern
+- gochecknoglobals does NOT flag embed.FS vars; //nolint there fails nolintlint as unused
+- make fmt runs swag gen as side effect; golangci-lint fmt alone when swagger regen unwanted
+- musttag demands json tags on marshaled structs; godoclint bans duplicate package docs; exhaustruct requires embedded bun.BaseModel{} initialized in literals
+- Atomic states_json audit append: json_insert(states_json,'$[#]',json(?)) inside guarded UPDATE
+
+## Messages API (MVP)
+- messages.Service concrete (no interfaces per project rule): Enqueue/Get/List/Cancel -> smsgateway DTOs; GetMessagesResponse is plain []MessageState array
+- FIFO worker via fxutil.RegisterRunnable: Pending->Sent/Failed; cancel-safe pre-send Pending recheck; crash mid-send -> re-sent next boot
+- SendSMS reachable via *modem.Service.SendSMS wrapper (Commands unexported); quotes handled in Commands
+- Error bodies {"message","code"} (fiberfx ErrorResponse); 409 mapped but unreachable (service mints IDs)
+- serve exits ~10ms after start if serial port absent (fxutil runnable failure -> Shutdown) - attach modem or pty for boot testing
 
 ## Module Conventions
 - Each package exposes Module(...) fx.Option (withRun bool for modules with background work)
