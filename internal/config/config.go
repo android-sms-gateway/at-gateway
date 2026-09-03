@@ -80,7 +80,7 @@ func Default() Config {
 			Port:           "/dev/ttyUSB0",
 			BaudRate:       115200,
 			InitTimeout:    30 * time.Second,
-			CommandTimeout: 10 * time.Second,
+			CommandTimeout: 30 * time.Second,
 		},
 		Storage: storageConfig{
 			Path: "data/storage.json",

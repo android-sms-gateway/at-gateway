@@ -3,6 +3,7 @@
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ext_id VARCHAR(36) NOT NULL,
+    device_id VARCHAR(36) NOT NULL,
     type VARCHAR(32) NOT NULL DEFAULT 'Text',
     content TEXT NOT NULL,
     priority INTEGER NOT NULL DEFAULT 0,

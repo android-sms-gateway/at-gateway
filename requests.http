@@ -54,6 +54,8 @@ Authorization: Basic sms:{{basicPassword}}
 # ============================================================
 
 ###
+# Enqueue -> 202 Accepted + Location header + body id = generated ext_id
+# (nanoid; body may carry an explicit id, which is preserved)
 # @name postMessage
 POST {{baseURL}}/api/v1/messages HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
@@ -65,37 +67,23 @@ Content-Type: application/json
 @messageID={{postMessage.response.body.$.id}}
 
 ###
-# Non-ASCII text is rejected (printable 7-bit ASCII only) -> 400
-POST {{baseURL}}/api/v1/messages HTTP/1.1
-Authorization: Basic sms:{{basicPassword}}
-Content-Type: application/json
-
-{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"привет"}}
-
-###
-# Text longer than 160 characters is rejected -> 400
-# (text below is 175 chars)
-POST {{baseURL}}/api/v1/messages HTTP/1.1
-Authorization: Basic sms:{{basicPassword}}
-Content-Type: application/json
-
-{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"Example message body intentionally exceeding the one-hundred-and-sixty-character single-SMS limit so that the AT gateway responds with 400 Bad Request instead of enqueueing it"}}
-
-###
-# Empty phoneNumbers is rejected -> 400
-POST {{baseURL}}/api/v1/messages HTTP/1.1
-Authorization: Basic sms:{{basicPassword}}
-Content-Type: application/json
-
-{"phoneNumbers":[],"textMessage":{"text":"Hello"}}
-
-###
 # Poll message state by id; expect Pending -> Sent once the worker sends it
 GET {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
+
+# --- Get by id ---
+
 ###
-# List messages; response is a plain JSON array, total count in X-Total-Count
+# Unknown id -> 404
+GET {{baseURL}}/api/v1/messages/does-not-exist HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+
+# --- List ---
+
+###
+# List messages; array of MessageState wire objects, total count in X-Total-Count
 GET {{baseURL}}/api/v1/messages?limit=10 HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
@@ -105,24 +93,22 @@ GET {{baseURL}}/api/v1/messages?state=Sent HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
 ###
-# Invalid limit parses to default 50 via Fiber QueryInt -> 200 (not 400)
-GET {{baseURL}}/api/v1/messages?limit=abc HTTP/1.1
+# Sort ascending by created_at (default is -created_at)
+GET {{baseURL}}/api/v1/messages?sort=created_at HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
-###
-# Below minimum limit -> 400 (below minimum 1)
-GET {{baseURL}}/api/v1/messages?limit=0 HTTP/1.1
-Authorization: Basic sms:{{basicPassword}}
+
+# --- Cancel (DELETE) ---
 
 ###
-# Above maximum limit -> 400 (above maximum 100)
-GET {{baseURL}}/api/v1/messages?limit=101 HTTP/1.1
-Authorization: Basic sms:{{basicPassword}}
-
-###
-# Cancel; 200 if still Pending, else 400 (not pending)
+# Cancel a Pending message -> 200 + state Cancelled; if the worker already
+# sent it the DELETE answers 400 (message is not pending)
 DELETE {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
+
+# ============================================================
+# 5. AUTH
+# ============================================================
 
 ###
 # 401 Unauthorized

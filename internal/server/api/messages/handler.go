@@ -11,12 +11,8 @@ import (
 	"github.com/go-core-fx/fiberfx/validation"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
+	"github.com/samber/lo"
 	"go.uber.org/zap"
-)
-
-const (
-	defaultListLimit = 50
-	maxListLimit     = 100
 )
 
 type Handler struct {
@@ -46,7 +42,7 @@ func NewHandler(
 }
 
 func (h *Handler) Register(router fiber.Router) {
-	router = router.Group("messages", h.handleError)
+	router = router.Group("messages", h.errorHandler)
 
 	router.Get("", h.list)
 	router.Get(":id", h.get)
@@ -72,45 +68,32 @@ func (h *Handler) Register(router fiber.Router) {
 //	@Header			200				{integer}	X-Total-Count					"Total number of items available"
 //	@Failure		400				{object}	smsgateway.ErrorResponse		"Invalid request"
 //	@Failure		401				{object}	smsgateway.ErrorResponse		"Unauthorized"
-//	@Failure		403				{object}	smsgateway.ErrorResponse		"Forbidden"
 //	@Failure		500				{object}	smsgateway.ErrorResponse		"Internal server error"
 //	@Router			/messages [get]
 func (h *Handler) list(c *fiber.Ctx) error {
-	filter := messages.ListFilter{
-		Limit:  c.QueryInt("limit", defaultListLimit),
-		Offset: c.QueryInt("offset", 0),
-		State:  nil,
-		Order:  messages.SortDesc,
-	}
-	if filter.Limit < 1 || filter.Limit > maxListLimit {
-		return fiber.NewError(fiber.StatusBadRequest, "limit must be between 1 and 100")
-	}
-	if filter.Offset < 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "offset must not be negative")
+	var options smsgateway.ListMessagesOptions
+	if err := h.QueryParserValidator(c, &options); err != nil {
+		return fmt.Errorf("parse query parameters: %w", err)
 	}
 
-	stateParam := c.Query("state")
-	if stateParam != "" {
-		state := smsgateway.ProcessingState(stateParam)
-		filter.State = &state
+	filter := messages.ListOptions{
+		Filter: &messages.ListFilter{
+			State:    (*smsgateway.ProcessingState)(options.State),
+			DeviceID: options.DeviceID,
+			Since:    options.From,
+			Until:    options.To,
+		},
+		Order: &messages.ListOrder{
+			Order: (*messages.SortOrder)(options.Sort),
+		},
+		Pagination: &messages.ListPagination{
+			Limit:  options.Limit,
+			Offset: options.Offset,
+		},
+		Flags: &messages.ListFlags{
+			IncludeContent: options.IncludeContent,
+		},
 	}
-
-	switch sort := c.Query("sort", "-created_at"); sort {
-	case "created_at":
-		filter.Order = messages.SortAsc
-	case "-created_at":
-		filter.Order = messages.SortDesc
-	default:
-		return fiber.NewError(fiber.StatusBadRequest, `sort must be "created_at" or "-created_at"`)
-	}
-
-	// deviceId, from, to and includeContent are accepted for client-go
-	// compatibility but ignored: the MVP is single-device, has no date
-	// filtering and message states never carry content.
-	_ = c.Query("deviceId")
-	_ = c.Query("from")
-	_ = c.Query("to")
-	_ = c.Query("includeContent")
 
 	result, total, err := h.messagesSvc.List(c.Context(), filter)
 	if err != nil {
@@ -119,7 +102,13 @@ func (h *Handler) list(c *fiber.Ctx) error {
 
 	c.Set("X-Total-Count", strconv.Itoa(total))
 
-	return c.JSON(result)
+	// The list is serialized through the client-go wire shape; the domain
+	// Message struct is not JSON-tagged and must never reach the wire raw.
+	return c.JSON(
+		lo.Map(result, func(m messages.Message, _ int) smsgateway.MessageState {
+			return messageToState(&m)
+		}),
+	)
 }
 
 // Get message state.
@@ -133,6 +122,7 @@ func (h *Handler) list(c *fiber.Ctx) error {
 //	@Failure		400	{object}	smsgateway.ErrorResponse		"Invalid request"
 //	@Failure		401	{object}	smsgateway.ErrorResponse		"Unauthorized"
 //	@Failure		403	{object}	smsgateway.ErrorResponse		"Forbidden"
+//	@Failure		404	{object}	smsgateway.ErrorResponse		"Message not found"
 //	@Failure		500	{object}	smsgateway.ErrorResponse		"Internal server error"
 //	@Router			/messages/{id} [get]
 func (h *Handler) get(c *fiber.Ctx) error {
@@ -161,7 +151,7 @@ func (h *Handler) get(c *fiber.Ctx) error {
 //	@Header			202		{string}	Location						"Get message state URL"
 //	@Router			/messages [post]
 func (h *Handler) post(c *fiber.Ctx, req *smsgateway.Message) error {
-	input := MessageInputFromDTO(req)
+	input := messageInputFromDTO(req)
 
 	state, err := h.messagesSvc.Enqueue(c.Context(), *input)
 	if err != nil {
@@ -195,26 +185,28 @@ func (h *Handler) delete(c *fiber.Ctx) error {
 	return c.JSON(smsgateway.GetMessageResponse(messageToState(state)))
 }
 
-func (h *Handler) handleError(c *fiber.Ctx) error {
+func (h *Handler) errorHandler(c *fiber.Ctx) error {
 	err := c.Next()
 	if err == nil {
 		return nil
 	}
 
 	switch {
-	case errors.Is(err, messages.ErrNotSupported),
-		errors.Is(err, messages.ErrInvalidText),
-		errors.Is(err, messages.ErrInvalidPhoneNumbers),
-		errors.Is(err, messages.ErrInvalidContent),
-		errors.Is(err, messages.ErrMissingExtID):
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
-	case errors.Is(err, messages.ErrAlreadyExists),
-		errors.Is(err, messages.ErrDuplicateRecipient),
-		errors.Is(err, messages.ErrNotPending):
-		return fiber.NewError(fiber.StatusConflict, err.Error())
 	case errors.Is(err, messages.ErrNotFound):
 		return fiber.NewError(fiber.StatusNotFound, err.Error())
-	default:
-		return err //nolint:wrapcheck // err is already wrapped
+	case errors.Is(err, messages.ErrAlreadyExists):
+		return fiber.NewError(fiber.StatusConflict, err.Error())
+	case errors.Is(err, messages.ErrNotPending):
+		return fiber.NewError(fiber.StatusConflict, err.Error())
+	case errors.Is(err, messages.ErrDuplicateRecipient):
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	case errors.Is(err, messages.ErrNotSupported):
+		return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+	case errors.Is(err, messages.ErrInvalidContent):
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	case errors.Is(err, messages.ErrInvalidPhoneNumbers):
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
+
+	return err //nolint:wrapcheck // already wrapped
 }

@@ -3,7 +3,7 @@ module github.com/android-sms-gateway/at-gateway
 go 1.25.7
 
 require (
-	github.com/android-sms-gateway/client-go v1.14.2
+	github.com/android-sms-gateway/client-go v1.15.0
 	github.com/go-core-fx/bunfx v0.1.0
 	github.com/go-core-fx/config v0.1.0
 	github.com/go-core-fx/fiberfx v0.5.2-0.20260730051335-23103786f490

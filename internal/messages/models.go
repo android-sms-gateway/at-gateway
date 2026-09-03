@@ -45,11 +45,12 @@ func (s statesModel) Latest() *stateModel {
 }
 
 type messageModel struct {
-	bun.BaseModel `bun:"table:messages"`
+	bun.BaseModel `bun:"table:messages,alias:m"`
 	db.TimedModel
 
-	ID    int64  `bun:"id,pk,autoincrement"`
-	ExtID string `bun:"ext_id,notnull"`
+	ID       int64  `bun:"id,pk,autoincrement"`
+	ExtID    string `bun:"ext_id,notnull"`
+	DeviceID string `bun:"device_id,notnull"`
 
 	Type    ContentType `bun:"type,notnull"`
 	Content string      `bun:"content,notnull"`
@@ -85,6 +86,7 @@ func newMessageModel(msg *MessageInput, now time.Time) (*messageModel, error) {
 		},
 		ID:          0,
 		ExtID:       msg.ExtID,
+		DeviceID:    *msg.DeviceID,
 		Type:        contentType,
 		Content:     content,
 		Priority:    int8(msg.Priority),
@@ -182,7 +184,7 @@ func (m *messageModel) toDomain() (*Message, error) {
 			return recipient.toDomain()
 		}),
 		States:      m.States.toDomainMap(),
-		DeviceID:    "",
+		DeviceID:    m.DeviceID,
 		IsHashed:    m.IsHashed,
 		IsEncrypted: m.IsEncrypted,
 	}
@@ -191,7 +193,7 @@ func (m *messageModel) toDomain() (*Message, error) {
 }
 
 type recipientModel struct {
-	bun.BaseModel `bun:"table:message_recipients"`
+	bun.BaseModel `bun:"table:message_recipients,alias:mr"`
 
 	ID        int64       `bun:"id,pk,autoincrement"`
 	RefID     *int        `bun:"ref_id"`
