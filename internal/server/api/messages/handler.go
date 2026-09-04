@@ -137,20 +137,28 @@ func (h *Handler) get(c *fiber.Ctx) error {
 // Enqueue message.
 //
 //	@Summary		Enqueue message
-//	@Description	Enqueues a message for sending. The single registered device is used; `deviceId` is accepted but ignored.
+//	@Description	Enqueues a message for sending. If `deviceId` is set, the specified device is used; otherwise a random registered device is chosen.
 //	@Tags			User, Messages
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		smsgateway.Message				true	"Send message request"
-//	@Success		202		{object}	smsgateway.GetMessageResponse	"Message enqueued"
-//	@Failure		400		{object}	smsgateway.ErrorResponse		"Invalid request"
-//	@Failure		401		{object}	smsgateway.ErrorResponse		"Unauthorized"
-//	@Failure		403		{object}	smsgateway.ErrorResponse		"Forbidden"
-//	@Failure		409		{object}	smsgateway.ErrorResponse		"Message with such ID already exists"
-//	@Failure		500		{object}	smsgateway.ErrorResponse		"Internal server error"
-//	@Header			202		{string}	Location						"Get message state URL"
+//	@Param			skipPhoneValidation	query		bool							false	"Skip phone validation"
+//	@Param			deviceActiveWithin	query		int								false	"Filter devices active within the specified number of hours"	default(0)	minimum(0)
+//	@Param			request				body		smsgateway.Message				true	"Send message request"
+//	@Success		202					{object}	smsgateway.GetMessageResponse	"Message enqueued"
+//	@Failure		400					{object}	smsgateway.ErrorResponse		"Invalid request"
+//	@Failure		401					{object}	smsgateway.ErrorResponse		"Unauthorized"
+//	@Failure		403					{object}	smsgateway.ErrorResponse		"Forbidden"
+//	@Failure		409					{object}	smsgateway.ErrorResponse		"Message with the same ID already exists"
+//	@Failure		500					{object}	smsgateway.ErrorResponse		"Internal server error"
+//	@Failure		503					{object}	smsgateway.ErrorResponse		"Queue limits exceeded; ensure device is online"
+//	@Header			202					{string}	Location						"Get message state URL"
 //	@Router			/messages [post]
 func (h *Handler) post(c *fiber.Ctx, req *smsgateway.Message) error {
+	var options smsgateway.SendOptions
+	if err := c.QueryParser(&options); err != nil {
+		return fmt.Errorf("parse query parameters: %w", err)
+	}
+
 	input := messageInputFromDTO(req)
 
 	state, err := h.messagesSvc.Enqueue(c.Context(), *input)
