@@ -3,7 +3,7 @@ module github.com/android-sms-gateway/at-gateway
 go 1.25.7
 
 require (
-	github.com/android-sms-gateway/client-go v1.15.0
+	github.com/android-sms-gateway/client-go v1.15.1-0.20260908033937-5c2d5e3ae174
 	github.com/go-core-fx/bunfx v0.1.0
 	github.com/go-core-fx/config v0.1.0
 	github.com/go-core-fx/fiberfx v0.5.2-0.20260730051335-23103786f490
@@ -16,6 +16,7 @@ require (
 	github.com/go-playground/validator/v10 v10.28.0
 	github.com/gofiber/fiber/v2 v2.52.14
 	github.com/matoous/go-nanoid/v2 v2.1.0
+	github.com/nyaruka/phonenumbers v1.8.1
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/samber/lo v1.53.0
@@ -24,6 +25,7 @@ require (
 	github.com/uptrace/bun/dialect/sqlitedialect v1.2.18
 	github.com/urfave/cli/v3 v3.10.1
 	github.com/warthog618/modem v0.4.0
+	github.com/warthog618/sms v0.3.0
 	go.bug.st/serial v1.8.0
 	go.uber.org/fx v1.24.0
 	go.uber.org/zap v1.28.0
@@ -66,6 +68,7 @@ require (
 	github.com/knadh/koanf/providers/env/v2 v2.0.0 // indirect
 	github.com/knadh/koanf/providers/file v1.2.1 // indirect
 	github.com/knadh/koanf/v2 v2.3.5 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

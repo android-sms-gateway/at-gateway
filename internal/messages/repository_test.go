@@ -256,7 +256,7 @@ func TestRecipientStateTransitions(t *testing.T) {
 }
 
 // TestDequeueNextPending_SkipsFinalized verifies that terminal messages are
-// never claimed and that Cancel cascades the Failed state onto recipients.
+// never claimed and that Cancel cascades the Cancelled state onto recipients.
 func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
 	repo, _ := newRepository(t)
 	ctx := context.Background()
@@ -272,15 +272,128 @@ func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load cancelled: %v", err)
 	}
-	if cancelled.State != smsgateway.ProcessingStateFailed {
-		t.Fatalf("cancelled state = %q, want Failed", cancelled.State)
+	if cancelled.State != smsgateway.ProcessingStateCancelled {
+		t.Fatalf("cancelled state = %q, want Cancelled", cancelled.State)
 	}
-	if len(cancelled.Recipients) != 1 || cancelled.Recipients[0].State != smsgateway.ProcessingStateFailed {
+	if len(cancelled.Recipients) != 1 || cancelled.Recipients[0].State != smsgateway.ProcessingStateCancelled {
 		t.Fatalf("cancelled recipients not cascaded: %+v", cancelled.Recipients)
 	}
 
 	message, err := repo.DequeueNextPending(ctx)
 	if !errors.Is(err, messages.ErrNotFound) {
 		t.Fatalf("dequeue = %v, %v; want ErrNotFound", message, err)
+	}
+}
+
+// TestDequeueNextPending_ExpiresValidUntil verifies that a message whose
+// validity window has closed is expired to Failed (with the recipient
+// histories cascaded) instead of being claimed.
+func TestDequeueNextPending_ExpiresValidUntil(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	expired := newInput("m1", "+11111111111")
+	past := time.Now().UTC().Add(-time.Minute)
+	expired.ValidUntil = &past
+	if err := repo.Create(ctx, expired); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	message, err := repo.DequeueNextPending(ctx)
+	if !errors.Is(err, messages.ErrNotFound) {
+		t.Fatalf("dequeue = %v, %v; want ErrNotFound", message, err)
+	}
+
+	got, err := repo.GetByID(ctx, "m1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.State != smsgateway.ProcessingStateFailed {
+		t.Fatalf("state = %q, want Failed", got.State)
+	}
+	if got.Recipients[0].State != smsgateway.ProcessingStateFailed {
+		t.Fatalf("recipient state = %q, want Failed", got.Recipients[0].State)
+	}
+}
+
+// TestDequeueNextPending_ExpiryLeavesPendingClaimable verifies that expiry
+// removes only expired messages: a healthy Pending message is still claimed
+// in the same pass.
+func TestDequeueNextPending_ExpiryLeavesPendingClaimable(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	expired := newInput("m1", "+11111111111")
+	past := time.Now().UTC().Add(-time.Minute)
+	expired.ValidUntil = &past
+	if err := repo.Create(ctx, expired); err != nil {
+		t.Fatalf("create expired: %v", err)
+	}
+
+	if err := repo.Create(ctx, newInput("m2", "+22222222222")); err != nil {
+		t.Fatalf("create healthy: %v", err)
+	}
+
+	claimed, err := repo.DequeueNextPending(ctx)
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if claimed.ID != "m2" {
+		t.Fatalf("dequeued = %q, want m2 (expired m1 skipped)", claimed.ID)
+	}
+
+	if got, loadErr := repo.GetByID(ctx, "m1"); loadErr != nil {
+		t.Fatalf("load expired: %v", loadErr)
+	} else if got.State != smsgateway.ProcessingStateFailed {
+		t.Fatalf("expired state = %q, want Failed", got.State)
+	}
+}
+
+// TestDequeueNextPending_SkipsFutureSchedule verifies that a message scheduled
+// in the future stays Pending and is not claimed.
+func TestDequeueNextPending_SkipsFutureSchedule(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	scheduled := newInput("m1", "+11111111111")
+	future := time.Now().UTC().Add(time.Hour)
+	scheduled.ScheduleAt = &future
+	if err := repo.Create(ctx, scheduled); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	message, err := repo.DequeueNextPending(ctx)
+	if !errors.Is(err, messages.ErrNotFound) {
+		t.Fatalf("dequeue = %v, %v; want ErrNotFound", message, err)
+	}
+
+	got, err := repo.GetByID(ctx, "m1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.State != smsgateway.ProcessingStatePending {
+		t.Fatalf("state = %q, want Pending", got.State)
+	}
+}
+
+// TestDequeueNextPending_ClaimsDueSchedule verifies that a scheduled message
+// whose time has arrived is claimed like any other.
+func TestDequeueNextPending_ClaimsDueSchedule(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	scheduled := newInput("m1", "+11111111111")
+	due := time.Now().UTC().Add(-time.Minute)
+	scheduled.ScheduleAt = &due
+	if err := repo.Create(ctx, scheduled); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	claimed, err := repo.DequeueNextPending(ctx)
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if claimed.ID != "m1" || claimed.State != smsgateway.ProcessingStateProcessed {
+		t.Fatalf("dequeued = %q state %q, want m1 Processed", claimed.ID, claimed.State)
 	}
 }

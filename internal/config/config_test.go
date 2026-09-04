@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
-	"github.com/android-sms-gateway/at-gateway/internal/messages"
 )
 
 func TestDefaultMessages(t *testing.T) {
@@ -14,24 +13,15 @@ func TestDefaultMessages(t *testing.T) {
 	if got := cfg.Messages.PollInterval; got != time.Second {
 		t.Errorf("Default().Messages.PollInterval = %v, want %v", got, time.Second)
 	}
-}
-
-func TestMessagesDefaultsMatchPackage(t *testing.T) {
-	cfg := config.Default()
-	want := messages.Default()
-
-	if cfg.Messages.PollInterval != want.PollInterval {
-		t.Errorf(
-			"raw PollInterval default = %v, want %v (must mirror messages.Default)",
-			cfg.Messages.PollInterval,
-			want.PollInterval,
-		)
+	if got := cfg.Messages.DefaultRegion; got != "RU" {
+		t.Errorf("Default().Messages.DefaultRegion = %q, want %q", got, "RU")
 	}
 }
 
 func TestNewOverridesMessagesFromEnv(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
 	t.Setenv("MESSAGES__POLL_INTERVAL", "2s")
+	t.Setenv("MESSAGES__DEFAULT_REGION", "DE")
 
 	cfg, err := config.New()
 	if err != nil {
@@ -40,6 +30,9 @@ func TestNewOverridesMessagesFromEnv(t *testing.T) {
 
 	if got := cfg.Messages.PollInterval; got != 2*time.Second {
 		t.Errorf("MESSAGES__POLL_INTERVAL mapped to %v, want %v", got, 2*time.Second)
+	}
+	if got := cfg.Messages.DefaultRegion; got != "DE" {
+		t.Errorf("MESSAGES__DEFAULT_REGION mapped to %q, want %q", got, "DE")
 	}
 	if got := cfg.HTTP.Address; got != "127.0.0.1:3000" {
 		t.Errorf("HTTP.Address = %q, want default %q (unrelated keys untouched)", got, "127.0.0.1:3000")

@@ -1,6 +1,8 @@
 package messages
 
 import (
+	"time"
+
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/samber/lo"
@@ -20,8 +22,7 @@ func messageInputFromDTO(req *smsgateway.Message) *messages.MessageInput {
 		MessageOptions: messages.MessageOptions{
 			SimNumber:          req.SimNumber,
 			WithDeliveryReport: req.WithDeliveryReport,
-			TTL:                req.TTL,
-			ValidUntil:         req.ValidUntil,
+			ValidUntil:         req.ValidUntilTime(time.Now()),
 			ScheduleAt:         req.ScheduleAt,
 			Priority:           req.Priority,
 		},

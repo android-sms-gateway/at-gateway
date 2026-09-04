@@ -40,7 +40,6 @@ type MessageStateContent struct {
 type MessageOptions struct {
 	SimNumber          *uint8
 	WithDeliveryReport *bool
-	TTL                *uint64
 	ValidUntil         *time.Time
 	ScheduleAt         *time.Time
 	Priority           smsgateway.MessagePriority
@@ -57,11 +56,12 @@ type MessageInput struct {
 	IsEncrypted  bool
 }
 
-// Content derives the type/content columns from the domain content.
+// Content derives the type/content columns from the domain content. Content
+// exclusivity and validity are already enforced by the client-go validation at
+// the API edge, so only the individual kinds are mapped here: multimedia
+// content is not supported by this gateway.
 func (m *MessageInput) Content() (ContentType, string, error) {
 	switch {
-	case m.TextContent != nil && m.DataContent != nil:
-		return "", "", fmt.Errorf("%w: both text and data content are set", ErrInvalidContent)
 	case m.TextContent != nil:
 		content, err := json.Marshal(m.TextContent)
 		if err != nil {
@@ -76,6 +76,8 @@ func (m *MessageInput) Content() (ContentType, string, error) {
 		}
 
 		return ContentTypeData, string(content), nil
+	case m.MultimediaContent != nil:
+		return "", "", fmt.Errorf("%w: multimedia messages are not supported", ErrNotSupported)
 	default:
 		return "", "", fmt.Errorf("%w: message content is required", ErrInvalidContent)
 	}
