@@ -34,27 +34,14 @@ func exitCode(t *testing.T, err error) int {
 	return exitErr.ExitCode()
 }
 
-// TestSendCommand_ValidationNonASCII pins the validation-exit path: non-ASCII
-// text exits 1 with an actionable message BEFORE any config or modem wiring.
-func TestSendCommand_ValidationNonASCII(t *testing.T) {
-	err := runSend(t, []string{"send", "-p", "+79990001234", "-t", "привет"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if code := exitCode(t, err); code != 1 {
-		t.Fatalf("exit code = %d, want 1", code)
-	}
-	if !strings.Contains(err.Error(), "invalid text") {
-		t.Fatalf("error %q does not mention invalid text", err)
-	}
-	if !strings.Contains(err.Error(), "U+043F") {
-		t.Fatalf("error %q does not describe the offending rune", err)
-	}
-}
-
-// TestSendCommand_ValidationTooLong pins the over-length exit path.
-func TestSendCommand_ValidationTooLong(t *testing.T) {
-	longText := strings.Repeat("a", 161)
+// TestSendCommand_ValidationTooManyParts pins the validation-exit path: text
+// that can be encoded (UCS-2 fallback) is accepted, so validation failures are
+// limited to structural problems. A text exceeding the part cap exits 1 with
+// an actionable message BEFORE any modem wiring.
+func TestSendCommand_ValidationTooManyParts(t *testing.T) {
+	// 1530 ASCII characters = exactly 10 GSM-7 parts (153 chars each); 1531
+	// exceeds the default cap of 10 parts.
+	longText := strings.Repeat("a", 1531)
 	err := runSend(t, []string{"send", "-p", "+79990001234", "-t", longText})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -64,6 +51,32 @@ func TestSendCommand_ValidationTooLong(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid text") {
 		t.Fatalf("error %q does not mention invalid text", err)
+	}
+	if !strings.Contains(err.Error(), "SMS parts long") {
+		t.Fatalf("error %q does not describe the part-count overflow", err)
+	}
+}
+
+// TestSendCommand_MaxPartsFlag pins the --max-parts override: raising the cap
+// lets a text that exceeds the config default pass validation and proceed to
+// the (deterministically failing) modem port open.
+func TestSendCommand_MaxPartsFlag(t *testing.T) {
+	t.Setenv("MODEM__PORT", "/dev/this-port-does-not-exist")
+	t.Setenv("MODEM__BAUD_RATE", "115200")
+
+	longText := strings.Repeat("a", 1600)
+	err := runSend(t, []string{"send", "-p", "+79990001234", "-t", longText, "--max-parts", "11"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if code := exitCode(t, err); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if strings.Contains(err.Error(), "invalid text") {
+		t.Fatalf("error %q reports a validation failure for an 11-part text", err)
+	}
+	if !strings.Contains(err.Error(), "open modem port") {
+		t.Fatalf("error %q does not report the port-open failure", err)
 	}
 }
 

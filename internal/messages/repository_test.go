@@ -256,7 +256,7 @@ func TestRecipientStateTransitions(t *testing.T) {
 }
 
 // TestDequeueNextPending_SkipsFinalized verifies that terminal messages are
-// never claimed and that Cancel cascades the Failed state onto recipients.
+// never claimed and that Cancel cascades the Cancelled state onto recipients.
 func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
 	repo, _ := newRepository(t)
 	ctx := context.Background()
@@ -272,15 +272,258 @@ func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load cancelled: %v", err)
 	}
-	if cancelled.State != smsgateway.ProcessingStateFailed {
-		t.Fatalf("cancelled state = %q, want Failed", cancelled.State)
+	if cancelled.State != smsgateway.ProcessingStateCancelled {
+		t.Fatalf("cancelled state = %q, want Cancelled", cancelled.State)
 	}
-	if len(cancelled.Recipients) != 1 || cancelled.Recipients[0].State != smsgateway.ProcessingStateFailed {
+	if len(cancelled.Recipients) != 1 || cancelled.Recipients[0].State != smsgateway.ProcessingStateCancelled {
 		t.Fatalf("cancelled recipients not cascaded: %+v", cancelled.Recipients)
 	}
 
 	message, err := repo.DequeueNextPending(ctx)
 	if !errors.Is(err, messages.ErrNotFound) {
 		t.Fatalf("dequeue = %v, %v; want ErrNotFound", message, err)
+	}
+}
+
+// TestDequeueNextPending_ExpiresValidUntil verifies that a message whose
+// validity window has closed is expired to Failed (with the recipient
+// histories cascaded) instead of being claimed.
+func TestDequeueNextPending_ExpiresValidUntil(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	expired := newInput("m1", "+11111111111")
+	past := time.Now().UTC().Add(-time.Minute)
+	expired.ValidUntil = &past
+	if err := repo.Create(ctx, expired); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	message, err := repo.DequeueNextPending(ctx)
+	if !errors.Is(err, messages.ErrNotFound) {
+		t.Fatalf("dequeue = %v, %v; want ErrNotFound", message, err)
+	}
+
+	got, err := repo.GetByID(ctx, "m1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.State != smsgateway.ProcessingStateFailed {
+		t.Fatalf("state = %q, want Failed", got.State)
+	}
+	if got.Recipients[0].State != smsgateway.ProcessingStateFailed {
+		t.Fatalf("recipient state = %q, want Failed", got.Recipients[0].State)
+	}
+}
+
+// TestDequeueNextPending_ExpiryLeavesPendingClaimable verifies that expiry
+// removes only expired messages: a healthy Pending message is still claimed
+// in the same pass.
+func TestDequeueNextPending_ExpiryLeavesPendingClaimable(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	expired := newInput("m1", "+11111111111")
+	past := time.Now().UTC().Add(-time.Minute)
+	expired.ValidUntil = &past
+	if err := repo.Create(ctx, expired); err != nil {
+		t.Fatalf("create expired: %v", err)
+	}
+
+	if err := repo.Create(ctx, newInput("m2", "+22222222222")); err != nil {
+		t.Fatalf("create healthy: %v", err)
+	}
+
+	claimed, err := repo.DequeueNextPending(ctx)
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if claimed.ID != "m2" {
+		t.Fatalf("dequeued = %q, want m2 (expired m1 skipped)", claimed.ID)
+	}
+
+	if got, loadErr := repo.GetByID(ctx, "m1"); loadErr != nil {
+		t.Fatalf("load expired: %v", loadErr)
+	} else if got.State != smsgateway.ProcessingStateFailed {
+		t.Fatalf("expired state = %q, want Failed", got.State)
+	}
+}
+
+// TestDequeueNextPending_SkipsFutureSchedule verifies that a message scheduled
+// in the future stays Pending and is not claimed.
+func TestDequeueNextPending_SkipsFutureSchedule(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	scheduled := newInput("m1", "+11111111111")
+	future := time.Now().UTC().Add(time.Hour)
+	scheduled.ScheduleAt = &future
+	if err := repo.Create(ctx, scheduled); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	message, err := repo.DequeueNextPending(ctx)
+	if !errors.Is(err, messages.ErrNotFound) {
+		t.Fatalf("dequeue = %v, %v; want ErrNotFound", message, err)
+	}
+
+	got, err := repo.GetByID(ctx, "m1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.State != smsgateway.ProcessingStatePending {
+		t.Fatalf("state = %q, want Pending", got.State)
+	}
+}
+
+// TestDequeueNextPending_ClaimsDueSchedule verifies that a scheduled message
+// whose time has arrived is claimed like any other.
+func TestDequeueNextPending_ClaimsDueSchedule(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	scheduled := newInput("m1", "+11111111111")
+	due := time.Now().UTC().Add(-time.Minute)
+	scheduled.ScheduleAt = &due
+	if err := repo.Create(ctx, scheduled); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	claimed, err := repo.DequeueNextPending(ctx)
+	if err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	if claimed.ID != "m1" || claimed.State != smsgateway.ProcessingStateProcessed {
+		t.Fatalf("dequeued = %q state %q, want m1 Processed", claimed.ID, claimed.State)
+	}
+}
+
+type messageSeed struct {
+	extID string
+	at    time.Time
+}
+
+// seedListMessages creates messages and pins their created_at to exact
+// timestamps so filter boundaries are asserted at millisecond precision.
+func seedListMessages(t *testing.T, repo *messages.Repository, bunDB *bun.DB, seeds ...messageSeed) {
+	t.Helper()
+	ctx := context.Background()
+	for _, seed := range seeds {
+		if err := repo.Create(ctx, newInput(seed.extID, "+79990001111")); err != nil {
+			t.Fatalf("create %s: %v", seed.extID, err)
+		}
+		if _, err := bunDB.ExecContext(
+			ctx,
+			"UPDATE messages SET created_at = ? WHERE ext_id = ?",
+			seed.at,
+			seed.extID,
+		); err != nil {
+			t.Fatalf("set created_at for %s: %v", seed.extID, err)
+		}
+	}
+}
+
+func hasMessage(result []messages.Message, extID string) bool {
+	for _, m := range result {
+		if m.ID == extID {
+			return true
+		}
+	}
+	return false
+}
+
+func messageIDs(result []messages.Message) []string {
+	ids := make([]string, 0, len(result))
+	for _, m := range result {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+// TestList_FilterFromInclusive verifies the start boundary follows the
+// date-range convention: a message whose created_at equals the from timestamp
+// IS returned (created_at >= from).
+func TestList_FilterFromInclusive(t *testing.T) {
+	repo, bunDB := newRepository(t)
+	ctx := context.Background()
+
+	from := time.Date(2026, 9, 9, 10, 0, 0, 123_000_000, time.UTC)
+	to := from.Add(2 * time.Minute)
+	seedListMessages(t, repo, bunDB,
+		messageSeed{extID: "m-at-from", at: from},
+		messageSeed{extID: "m-after-from", at: from.Add(time.Minute)},
+	)
+
+	result, _, err := repo.List(ctx, messages.ListOptions{
+		Filter: &messages.ListFilter{From: &from, To: &to},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !hasMessage(result, "m-at-from") {
+		t.Fatalf("list = %v, want m-at-from (created_at == from) included", messageIDs(result))
+	}
+}
+
+// TestList_FilterToExclusive verifies the end boundary follows the date-range
+// convention: a message whose created_at equals the to timestamp is NOT
+// returned (created_at < to).
+func TestList_FilterToExclusive(t *testing.T) {
+	repo, bunDB := newRepository(t)
+	ctx := context.Background()
+
+	from := time.Date(2026, 9, 9, 10, 0, 0, 123_000_000, time.UTC)
+	to := from.Add(2 * time.Minute)
+	seedListMessages(t, repo, bunDB,
+		messageSeed{extID: "m-before-to", at: from.Add(time.Minute)},
+		messageSeed{extID: "m-at-to", at: to},
+	)
+
+	result, _, err := repo.List(ctx, messages.ListOptions{
+		Filter: &messages.ListFilter{From: &from, To: &to},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !hasMessage(result, "m-before-to") {
+		t.Fatalf("list = %v, want m-before-to included", messageIDs(result))
+	}
+	if hasMessage(result, "m-at-to") {
+		t.Fatalf("list = %v, want m-at-to (created_at == to) excluded", messageIDs(result))
+	}
+}
+
+// TestList_FilterBoundaryMembership pins the full date-range convention at the
+// storage layer: rows seeded at from, between and to (millisecond precision)
+// yield exactly [from, between] in the result set.
+func TestList_FilterBoundaryMembership(t *testing.T) {
+	repo, bunDB := newRepository(t)
+	ctx := context.Background()
+
+	from := time.Date(2026, 9, 9, 10, 0, 0, 123_000_000, time.UTC)
+	between := from.Add(time.Minute)
+	to := from.Add(2 * time.Minute)
+	seedListMessages(t, repo, bunDB,
+		messageSeed{extID: "m-at-from", at: from},
+		messageSeed{extID: "m-between", at: between},
+		messageSeed{extID: "m-at-to", at: to},
+	)
+
+	result, total, err := repo.List(ctx, messages.ListOptions{
+		Filter: &messages.ListFilter{From: &from, To: &to},
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	for _, want := range []string{"m-at-from", "m-between"} {
+		if !hasMessage(result, want) {
+			t.Fatalf("list = %v, want %s included", messageIDs(result), want)
+		}
+	}
+	if hasMessage(result, "m-at-to") {
+		t.Fatalf("list = %v, want m-at-to (created_at == to) excluded", messageIDs(result))
 	}
 }

@@ -27,6 +27,15 @@ const (
 	statesLastStateExpr = "json_extract(states, '$[#-1].state')"
 )
 
+// sqliteTime returns t in the same textual form bun uses to persist [time.Time]
+// values, so SQLite column comparisons (valid_until <= ?, schedule_at <= ?)
+// sort identically on both sides of the operator. Binding a raw [time.Time]
+// instead would let the driver format it differently (e.g. " +0000 UTC") and
+// break ordering at equal-second boundaries.
+func sqliteTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02 15:04:05.999999-07:00")
+}
+
 // Repository is the bun-backed data access layer for persisted messages.
 type Repository struct {
 	db *bun.DB
@@ -131,8 +140,11 @@ func (r *Repository) List(ctx context.Context, options ListOptions) ([]Message, 
 	return result, total, nil
 }
 
+// Cancel transitions the message and its recipients (except those already
+// Failed or Cancelled) to ProcessingStateCancelled and returns the updated
+// message.
 func (r *Repository) Cancel(ctx context.Context, id string) (*Message, error) {
-	if err := r.updateState(ctx, id, smsgateway.ProcessingStateFailed, nil); err != nil {
+	if err := r.updateState(ctx, id, smsgateway.ProcessingStateCancelled, nil); err != nil {
 		return nil, err
 	}
 
@@ -144,6 +156,9 @@ func (r *Repository) Cancel(ctx context.Context, id string) (*Message, error) {
 	return message, nil
 }
 
+// SetState records a message state transition: it appends a history entry and
+// updates the state column unless the message already reports the target
+// state (a no-op that avoids duplicate history entries).
 func (r *Repository) SetState(ctx context.Context, id string, state smsgateway.ProcessingState) error {
 	now := time.Now().UTC()
 	entry := stateModel{State: state, At: now}
@@ -197,6 +212,105 @@ func (r *Repository) SetRecipientFailed(ctx context.Context, messageID, phoneNum
 			return uq.Set("error = ?", reason)
 		},
 	)
+}
+
+// SetRecipientDeliveredByRef flips the recipient whose stored message
+// reference matches refID to Delivered, and returns the ext_id of the
+// message that owns the recipient. The update is guarded so it only touches
+// a recipient that is CURRENTLY Sent, belongs to a delivery-report-enabled
+// message (options.with_delivery_report != false; an absent option is the
+// default-true case) and whose stored phone matches phone when phone is
+// non-empty - a status report can only transition the exact send that
+// requested it. phone carries the bare TP-RA digits (no leading '+'), so the
+// stored E.164 form is compared without its plus. When several open
+// recipients share a reference (8-bit MR wrap) the OLDEST is picked. No
+// match yields ErrNotFound; a duplicate report is a no-op match failure
+// because the recipient already left the Sent state.
+//
+// The reverse lookup runs as one raw statement: recipients have no ext_id,
+// so the row is selected through a nested SELECT joined on the message
+// options, and the message ext_id is returned with a correlated RETURNING
+// subquery.
+func (r *Repository) SetRecipientDeliveredByRef(ctx context.Context, refID int, phone string) (string, error) {
+	now := time.Now().UTC()
+	entry := stateModel{State: smsgateway.ProcessingStateDelivered, At: now}
+
+	var extID string
+
+	err := r.db.NewRaw(`
+		UPDATE message_recipients
+		SET states = json_insert(states, '$[#]', json(?))
+		WHERE id = (
+			SELECT mr.id
+			FROM message_recipients mr
+			JOIN messages m ON m.id = mr.message_id
+			WHERE mr.ref_id = ?
+				AND json_extract(mr.states, '$[#-1].state') = ?
+				AND json_extract(m.options, '$.with_delivery_report') IS NOT 0
+				AND (? = '' OR replace(mr.phone, '+', '') = ?)
+			ORDER BY mr.id ASC
+			LIMIT 1
+		)
+		RETURNING (SELECT m.ext_id FROM messages m WHERE m.id = message_recipients.message_id)`,
+		entry.String(),
+		refID,
+		smsgateway.ProcessingStateSent,
+		phone,
+		phone,
+	).Scan(ctx, &extID)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrNotFound
+	case err != nil:
+		return "", fmt.Errorf("set recipient state %s: %w", smsgateway.ProcessingStateDelivered, err)
+	}
+
+	return extID, nil
+}
+
+// SetRecipientFailedByRef flips the recipient whose stored message reference
+// matches refID to Failed with the given reason, mirroring
+// SetRecipientDeliveredByRef guards and semantics; it returns the ext_id of
+// the owning message.
+func (r *Repository) SetRecipientFailedByRef(ctx context.Context, refID int, phone, reason string) (string, error) {
+	now := time.Now().UTC()
+	entry := stateModel{State: smsgateway.ProcessingStateFailed, At: now}
+
+	var extID string
+
+	err := r.db.NewRaw(`
+		UPDATE message_recipients
+		SET states = json_insert(states, '$[#]', json(?)),
+			error = ?
+		WHERE id = (
+			SELECT mr.id
+			FROM message_recipients mr
+			JOIN messages m ON m.id = mr.message_id
+			WHERE mr.ref_id = ?
+				AND json_extract(mr.states, '$[#-1].state') = ?
+				AND json_extract(m.options, '$.with_delivery_report') IS NOT 0
+				AND (? = '' OR replace(mr.phone, '+', '') = ?)
+			ORDER BY mr.id ASC
+			LIMIT 1
+		)
+		RETURNING (SELECT m.ext_id FROM messages m WHERE m.id = message_recipients.message_id)`,
+		entry.String(),
+		reason,
+		refID,
+		smsgateway.ProcessingStateSent,
+		phone,
+		phone,
+	).Scan(ctx, &extID)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrNotFound
+	case err != nil:
+		return "", fmt.Errorf("set recipient state %s: %w", smsgateway.ProcessingStateFailed, err)
+	}
+
+	return extID, nil
 }
 
 func (r *Repository) updateRecipientState(
@@ -282,45 +396,96 @@ func (r *Repository) updateState(
 // DequeueNextPending atomically claims the oldest claimable message (FIFO by
 // id) and returns it with its recipients loaded. A message is claimable while
 // Pending, or while Processed (an interrupted claim is resumed, so at-least-once
-// processing survives restarts). The claim records a Processed state entry and
-// bumps updated_at. An empty queue yields ErrNotFound.
+// processing survives restarts). A message whose schedule_at is in the future
+// is not yet claimable, and a message whose valid_until has passed is expired
+// to Failed together with its recipients. The claim records a Processed state
+// entry and bumps updated_at. An empty queue yields ErrNotFound.
 //
-// The claim runs as one raw statement: the target row is picked by a nested
-// SELECT ... ORDER BY ... LIMIT, because UPDATE-level ORDER BY/LIMIT is not
-// available in the runtime SQLite build (modernc.org/sqlite compiles without
+// Expiry and claim run in one transaction, and the claim itself runs as one
+// raw statement: the target row is picked by a nested SELECT ... ORDER BY
+// ... LIMIT, because UPDATE-level ORDER BY/LIMIT is not available in the
+// runtime SQLite build (modernc.org/sqlite compiles without
 // SQLITE_ENABLE_UPDATE_DELETE_LIMIT) and bun's UpdateQuery cannot express it
 // either.
 func (r *Repository) DequeueNextPending(ctx context.Context) (*Message, error) {
 	now := time.Now().UTC()
 	entry := stateModel{State: smsgateway.ProcessingStateProcessed, At: now}
+	failedEntry := stateModel{State: smsgateway.ProcessingStateFailed, At: now}
 
 	var extID string
 
-	err := r.db.NewRaw(`
-		UPDATE messages
-		SET state = ?, updated_at = ?, states = json_insert(states, '$[#]', json(?))
-		WHERE state IN (?, ?)
-			AND id = (
-				SELECT id FROM messages
-				WHERE state IN (?, ?)
-				ORDER BY id ASC
-				LIMIT 1
-			)
-		RETURNING ext_id`,
-		smsgateway.ProcessingStateProcessed,
-		now,
-		entry.String(),
-		smsgateway.ProcessingStatePending,
-		smsgateway.ProcessingStateProcessed,
-		smsgateway.ProcessingStatePending,
-		smsgateway.ProcessingStateProcessed,
-	).Scan(ctx, &extID)
+	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Cascade the expiry onto recipients first, while the parent
+		// messages are still Pending/Processed and match the subquery.
+		if _, err := tx.NewUpdate().
+			Model((*recipientModel)(nil)).
+			Set(statesAppendExpr, failedEntry).
+			Set("error = ?", "message expired").
+			Where(statesLastStateExpr+" != ?", smsgateway.ProcessingStateFailed).
+			Where("message_id IN (?)", tx.NewSelect().
+				Model((*messageModel)(nil)).
+				Column("id").
+				Where("state IN (?)", bun.List([]string{
+					string(smsgateway.ProcessingStatePending),
+					string(smsgateway.ProcessingStateProcessed),
+				})).
+				Where("valid_until IS NOT NULL").
+				Where("valid_until <= ?", sqliteTime(now)),
+			).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("expire recipients: %w", err)
+		}
 
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return nil, ErrNotFound
-	case err != nil:
+		// Expire messages whose validity window closed while still pending.
+		if _, err := tx.NewUpdate().
+			Model((*messageModel)(nil)).
+			Set("state = ?", smsgateway.ProcessingStateFailed).
+			Set("updated_at = ?", now).
+			Set(statesAppendExpr, failedEntry).
+			Where("state IN (?)", bun.List([]string{
+				string(smsgateway.ProcessingStatePending),
+				string(smsgateway.ProcessingStateProcessed),
+			})).
+			Where("valid_until IS NOT NULL").
+			Where("valid_until <= ?", sqliteTime(now)).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("expire messages: %w", err)
+		}
+
+		err := tx.NewRaw(`
+			UPDATE messages
+			SET state = ?, updated_at = ?, states = json_insert(states, '$[#]', json(?))
+			WHERE state IN (?, ?)
+				AND (schedule_at IS NULL OR schedule_at <= ?)
+				AND id = (
+					SELECT id FROM messages
+					WHERE state IN (?, ?)
+						AND (schedule_at IS NULL OR schedule_at <= ?)
+					ORDER BY id ASC
+					LIMIT 1
+				)
+			RETURNING ext_id`,
+			smsgateway.ProcessingStateProcessed,
+			now,
+			entry.String(),
+			smsgateway.ProcessingStatePending,
+			smsgateway.ProcessingStateProcessed,
+			sqliteTime(now),
+			smsgateway.ProcessingStatePending,
+			smsgateway.ProcessingStateProcessed,
+			sqliteTime(now),
+		).Scan(ctx, &extID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("claim message: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("dequeue next pending message: %w", err)
+	}
+	if extID == "" {
+		return nil, ErrNotFound
 	}
 
 	message, err := r.GetByID(ctx, extID)

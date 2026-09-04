@@ -14,6 +14,8 @@ import (
 	"go.uber.org/fx"
 )
 
+// Module returns the fx module providing the configuration and the per-domain
+// config bindings consumed by the other modules.
 func Module() fx.Option {
 	//nolint:mnd //default values
 	return fx.Module(
@@ -64,7 +66,9 @@ func Module() fx.Option {
 			},
 			func(cfg Config) messages.Config {
 				return messages.Config{
-					PollInterval: cfg.Messages.PollInterval,
+					PollInterval:  cfg.Messages.PollInterval,
+					MaxSegments:   cfg.Messages.MaxSegments,
+					DefaultRegion: cfg.Messages.DefaultRegion,
 				}
 			},
 			func(cfg Config) sqlfx.Config {

@@ -40,7 +40,6 @@ type MessageStateContent struct {
 type MessageOptions struct {
 	SimNumber          *uint8
 	WithDeliveryReport *bool
-	TTL                *uint64
 	ValidUntil         *time.Time
 	ScheduleAt         *time.Time
 	Priority           smsgateway.MessagePriority
@@ -57,11 +56,12 @@ type MessageInput struct {
 	IsEncrypted  bool
 }
 
-// Content derives the type/content columns from the domain content.
+// Content derives the type/content columns from the domain content. Content
+// exclusivity and validity are already enforced by the client-go validation at
+// the API edge, so only the individual kinds are mapped here: multimedia
+// content is not supported by this gateway.
 func (m *MessageInput) Content() (ContentType, string, error) {
 	switch {
-	case m.TextContent != nil && m.DataContent != nil:
-		return "", "", fmt.Errorf("%w: both text and data content are set", ErrInvalidContent)
 	case m.TextContent != nil:
 		content, err := json.Marshal(m.TextContent)
 		if err != nil {
@@ -76,6 +76,8 @@ func (m *MessageInput) Content() (ContentType, string, error) {
 		}
 
 		return ContentTypeData, string(content), nil
+	case m.MultimediaContent != nil:
+		return "", "", fmt.Errorf("%w: multimedia messages are not supported", ErrNotSupported)
 	default:
 		return "", "", fmt.Errorf("%w: message content is required", ErrInvalidContent)
 	}
@@ -158,8 +160,8 @@ type ListFilter struct {
 	DeviceID *string
 	State    *smsgateway.ProcessingState
 
-	Since *time.Time
-	Until *time.Time
+	From *time.Time
+	To   *time.Time
 }
 
 func (f *ListFilter) apply(q *bun.SelectQuery) *bun.SelectQuery {
@@ -171,11 +173,11 @@ func (f *ListFilter) apply(q *bun.SelectQuery) *bun.SelectQuery {
 		q = q.Where("state = ?", string(*f.State))
 	}
 
-	if f.Since != nil {
-		q = q.Where("created_at > ?", f.Since)
+	if f.From != nil {
+		q = q.Where("created_at >= ?", f.From)
 	}
-	if f.Until != nil {
-		q = q.Where("created_at <= ?", f.Until)
+	if f.To != nil {
+		q = q.Where("created_at < ?", f.To)
 	}
 
 	if f.DeviceID != nil {

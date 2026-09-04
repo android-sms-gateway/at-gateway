@@ -316,14 +316,14 @@ const docTemplate = `{
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "Start date in RFC3339 format (ignored in MVP)",
+                        "description": "Start date in RFC3339 format (inclusive)",
                         "name": "from",
                         "in": "query"
                     },
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "End date in RFC3339 format (ignored in MVP)",
+                        "description": "End date in RFC3339 format (exclusive)",
                         "name": "to",
                         "in": "query"
                     },
@@ -346,7 +346,7 @@ const docTemplate = `{
                         "maxLength": 21,
                         "minLength": 21,
                         "type": "string",
-                        "description": "Filter by device ID (ignored in MVP)",
+                        "description": "Filter by device ID",
                         "name": "deviceId",
                         "in": "query"
                     },
@@ -369,7 +369,7 @@ const docTemplate = `{
                     {
                         "type": "boolean",
                         "default": false,
-                        "description": "Include textMessage/dataMessage content for each message (ignored in MVP)",
+                        "description": "Include textMessage/dataMessage content for each message",
                         "name": "includeContent",
                         "in": "query"
                     },
@@ -413,6 +413,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
                     },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -422,7 +428,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Enqueues a message for sending. The single registered device is used; ` + "`" + `deviceId` + "`" + ` is accepted but ignored.",
+                "description": "Enqueues a message for sending. If ` + "`" + `deviceId` + "`" + ` is set, the specified device is used; otherwise a random registered device is chosen.",
                 "consumes": [
                     "application/json"
                 ],
@@ -435,6 +441,12 @@ const docTemplate = `{
                 ],
                 "summary": "Enqueue message",
                 "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Skip phone validation",
+                        "name": "skipPhoneValidation",
+                        "in": "query"
+                    },
                     {
                         "description": "Send message request",
                         "name": "request",
@@ -477,7 +489,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Message with such ID already exists",
+                        "description": "Message with the same ID already exists",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
@@ -1112,6 +1124,10 @@ const docTemplate = `{
                         "$ref": "#/definitions/smsgateway.RecipientState"
                     }
                 },
+                "scheduleAt": {
+                    "description": "Scheduled delivery time, if set",
+                    "type": "string"
+                },
                 "state": {
                     "description": "State",
                     "allOf": [
@@ -1497,6 +1513,10 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/smsgateway.RecipientState"
                     }
+                },
+                "scheduleAt": {
+                    "description": "Scheduled delivery time, if set",
+                    "type": "string"
                 },
                 "state": {
                     "description": "State",
