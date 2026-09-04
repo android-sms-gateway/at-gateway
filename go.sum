@@ -2,8 +2,6 @@ github.com/KyleBanks/depth v1.2.1 h1:5h8fQADFrWtarTdtDudMmGsC7GPbOAu6RVB3ffsVFHc
 github.com/KyleBanks/depth v1.2.1/go.mod h1:jzSb9d0L43HxTQfT+oSA1EEp2q+ne2uh6XgeJcm8brE=
 github.com/alexlast/bunzap v0.1.0 h1:GfFAuLfGGmyPAKVpEtNMzTdi4qCNi+1MzhfII7wpao8=
 github.com/alexlast/bunzap v0.1.0/go.mod h1:j73jUB7k/V2Sd+P0lKGmwG5pFA0z7UiuqgGxzgwCvW8=
-github.com/android-sms-gateway/client-go v1.14.2 h1:WlYqijdyRe+35b6Bz4iTMJz5DalEgxLPNvnhnQwUvMI=
-github.com/android-sms-gateway/client-go v1.14.2/go.mod h1:DQsReciU1xcaVW3T5Z2bqslNdsAwCFCtghawmA6g6L4=
 github.com/android-sms-gateway/client-go v1.15.0 h1:R/U8nlE5G3Ie6j9cCows4b0IfCcj7fq224b/aelItfg=
 github.com/android-sms-gateway/client-go v1.15.0/go.mod h1:DQsReciU1xcaVW3T5Z2bqslNdsAwCFCtghawmA6g6L4=
 github.com/andybalholm/brotli v1.2.2 h1:HzTuoo2ErYQqf5qvcJInB8uvqSVxRttzkFexPWtnceM=

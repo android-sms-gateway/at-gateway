@@ -143,7 +143,7 @@ func (s *Service) processPending(ctx context.Context) bool {
 
 	if err != nil {
 		s.logger.Error("dequeue next pending message", zap.Error(err))
-		return true
+		return false
 	}
 
 	s.logger.Debug("processing pending message", zap.String("ext_id", message.ID))
