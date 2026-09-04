@@ -23,6 +23,10 @@ type Handler struct {
 	logger *zap.Logger
 }
 
+// defaultListLimit mirrors the server's default page size when the client
+// omits the limit query parameter.
+const defaultListLimit = 50
+
 // NewHandler wires the messages endpoints to the service layer, which owns
 // all business validation and the background send worker.
 func NewHandler(
@@ -56,38 +60,41 @@ func (h *Handler) Register(router fiber.Router) {
 //	@Description	Retrieves a list of messages with filtering and pagination
 //	@Tags			User, Messages
 //	@Produce		json
-//	@Param			from			query		string							false	"Start date in RFC3339 format (ignored in MVP)"	Format(date-time)
-//	@Param			to				query		string							false	"End date in RFC3339 format (ignored in MVP)"	Format(date-time)
+//	@Param			from			query		string							false	"Start date in RFC3339 format (inclusive)"	Format(date-time)
+//	@Param			to				query		string							false	"End date in RFC3339 format (exclusive)"	Format(date-time)
 //	@Param			state			query		smsgateway.ProcessingState		false	"Filter messages by processing state"
-//	@Param			deviceId		query		string							false	"Filter by device ID (ignored in MVP)"													minLength(21)	maxLength(21)
+//	@Param			deviceId		query		string							false	"Filter by device ID"																	minLength(21)	maxLength(21)
 //	@Param			limit			query		int								false	"Pagination limit"																		default(50)		minimum(1)	maximum(100)
 //	@Param			offset			query		int								false	"Pagination offset"																		default(0)
-//	@Param			includeContent	query		bool							false	"Include textMessage/dataMessage content for each message (ignored in MVP)"				default(false)
+//	@Param			includeContent	query		bool							false	"Include textMessage/dataMessage content for each message"								default(false)
 //	@Param			sort			query		string							false	"Sort order per JSON:API spec. Use created_at (ascending) or -created_at (descending)"	Enums(created_at, -created_at)	default(-created_at)
 //	@Success		200				{object}	smsgateway.GetMessagesResponse	"A list of messages"
 //	@Header			200				{integer}	X-Total-Count					"Total number of items available"
 //	@Failure		400				{object}	smsgateway.ErrorResponse		"Invalid request"
 //	@Failure		401				{object}	smsgateway.ErrorResponse		"Unauthorized"
+//	@Failure		403				{object}	smsgateway.ErrorResponse		"Forbidden"
 //	@Failure		500				{object}	smsgateway.ErrorResponse		"Internal server error"
 //	@Router			/messages [get]
 func (h *Handler) list(c *fiber.Ctx) error {
 	var options smsgateway.ListMessagesOptions
 	if err := h.QueryParserValidator(c, &options); err != nil {
-		return fmt.Errorf("parse query parameters: %w", err)
+		return fmt.Errorf("parse query parameters: %w", validation.NewErrors(err))
 	}
+
+	limit := lo.FromPtrOr(options.Limit, defaultListLimit)
 
 	filter := messages.ListOptions{
 		Filter: &messages.ListFilter{
 			State:    (*smsgateway.ProcessingState)(options.State),
 			DeviceID: options.DeviceID,
-			Since:    options.From,
-			Until:    options.To,
+			From:     options.From,
+			To:       options.To,
 		},
 		Order: &messages.ListOrder{
 			Order: (*messages.SortOrder)(options.Sort),
 		},
 		Pagination: &messages.ListPagination{
-			Limit:  options.Limit,
+			Limit:  &limit,
 			Offset: options.Offset,
 		},
 		Flags: &messages.ListFlags{
@@ -142,7 +149,6 @@ func (h *Handler) get(c *fiber.Ctx) error {
 //	@Accept			json
 //	@Produce		json
 //	@Param			skipPhoneValidation	query		bool							false	"Skip phone validation"
-//	@Param			deviceActiveWithin	query		int								false	"Filter devices active within the specified number of hours"	default(0)	minimum(0)
 //	@Param			request				body		smsgateway.Message				true	"Send message request"
 //	@Success		202					{object}	smsgateway.GetMessageResponse	"Message enqueued"
 //	@Failure		400					{object}	smsgateway.ErrorResponse		"Invalid request"
@@ -150,18 +156,19 @@ func (h *Handler) get(c *fiber.Ctx) error {
 //	@Failure		403					{object}	smsgateway.ErrorResponse		"Forbidden"
 //	@Failure		409					{object}	smsgateway.ErrorResponse		"Message with the same ID already exists"
 //	@Failure		500					{object}	smsgateway.ErrorResponse		"Internal server error"
-//	@Failure		503					{object}	smsgateway.ErrorResponse		"Queue limits exceeded; ensure device is online"
 //	@Header			202					{string}	Location						"Get message state URL"
 //	@Router			/messages [post]
 func (h *Handler) post(c *fiber.Ctx, req *smsgateway.Message) error {
 	var options smsgateway.SendOptions
 	if err := c.QueryParser(&options); err != nil {
-		return fmt.Errorf("parse query parameters: %w", err)
+		return fmt.Errorf("parse query parameters: %w", validation.NewErrors(err))
 	}
 
 	input := messageInputFromDTO(req)
 
-	state, err := h.messagesSvc.Enqueue(c.Context(), *input)
+	state, err := h.messagesSvc.Enqueue(c.Context(), *input, messages.EnqueueOptions{
+		SkipPhoneValidation: lo.FromPtrOr(options.SkipPhoneValidation, false),
+	})
 	if err != nil {
 		return fmt.Errorf("enqueue message: %w", err)
 	}
@@ -213,6 +220,8 @@ func (h *Handler) errorHandler(c *fiber.Ctx) error {
 	case errors.Is(err, messages.ErrInvalidContent):
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	case errors.Is(err, messages.ErrInvalidPhoneNumbers):
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	case errors.Is(err, messages.ErrDeviceNotFound):
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 

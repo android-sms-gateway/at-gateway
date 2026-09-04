@@ -11,6 +11,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	gonanoid "github.com/matoous/go-nanoid/v2"
+	"github.com/nyaruka/phonenumbers"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 )
@@ -27,6 +28,10 @@ type Service struct {
 	logger *zap.Logger
 }
 
+// NewService wires the message service with its repository and the device,
+// modem, metrics and logger dependencies. A zero or negative PollInterval
+// falls back to 1s and an empty DefaultRegion to the configured default; the
+// returned service is driven by Run.
 func NewService(
 	config Config,
 	messages *Repository,
@@ -37,6 +42,9 @@ func NewService(
 ) *Service {
 	if config.PollInterval <= 0 {
 		config.PollInterval = time.Second
+	}
+	if config.DefaultRegion == "" {
+		config.DefaultRegion = defaultRegion
 	}
 
 	return &Service{
@@ -52,13 +60,38 @@ func NewService(
 	}
 }
 
+// EnqueueOptions controls how an enqueued message is prepared.
+type EnqueueOptions struct {
+	// SkipPhoneValidation disables E.164 validation and normalization of
+	// phone numbers; numbers are stored verbatim.
+	SkipPhoneValidation bool
+}
+
 // Enqueue validates the input, generates the ext_id when absent (the service
 // is the SOLE ext_id generator), resolves the device ID and persists the
 // message as Pending. The returned message carries the resolved device ID.
-func (s *Service) Enqueue(ctx context.Context, input MessageInput) (*Message, error) {
+func (s *Service) Enqueue(ctx context.Context, input MessageInput, opts EnqueueOptions) (*Message, error) {
+	if input.IsEncrypted {
+		return nil, fmt.Errorf("%w: encrypted messages are not supported", ErrNotSupported)
+	}
+	if input.SimNumber != nil && *input.SimNumber != 1 {
+		return nil, fmt.Errorf("%w: only SIM 1 is supported", ErrNotSupported)
+	}
+
 	// At least one non-empty phone number.
 	if len(input.PhoneNumbers) == 0 || slices.Contains(input.PhoneNumbers, "") {
 		return nil, ErrInvalidPhoneNumbers
+	}
+
+	// Normalize phone numbers unless explicitly skipped.
+	if !opts.SkipPhoneValidation {
+		for i, v := range input.PhoneNumbers {
+			phone, err := s.cleanPhoneNumber(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to use phone in row %d: %w", i+1, err)
+			}
+			input.PhoneNumbers[i] = phone
+		}
 	}
 
 	if input.ExtID == "" {
@@ -115,6 +148,10 @@ func (s *Service) Cancel(ctx context.Context, extID string) (*Message, error) {
 	return message, nil
 }
 
+// Run processes the outbox until ctx is canceled: it claims and sends pending
+// messages on the poll ticker and applies incoming modem delivery reports.
+// All state transitions happen on this goroutine, so database work is
+// serialized; it returns when the context is done.
 func (s *Service) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.config.PollInterval)
 	defer ticker.Stop()
@@ -123,6 +160,8 @@ func (s *Service) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case report := <-s.modemSvc.DeliveryReports():
+			s.handleDeliveryReport(ctx, report)
 		case <-ticker.C:
 			for s.processPending(ctx) {
 				select {
@@ -135,6 +174,100 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
+// handleDeliveryReport applies one +CDS status report to the recipient that
+// requested it and re-derives the message state. It runs on the Run loop
+// goroutine, so database work is serialized with message processing. Errors
+// are logged and swallowed - a status report must never take the worker
+// down.
+func (s *Service) handleDeliveryReport(ctx context.Context, report modem.DeliveryReport) {
+	state, reason, handled := deliveryReportState(report.Status)
+	if !handled {
+		// The SC reports a temporary error (0x20..0x3F) and will retry on
+		// its own; the recipient stays Sent.
+		s.logger.Debug("delivery report ignored: temporary error",
+			zap.Int("ref", report.Reference),
+			zap.Int("status", int(report.Status)),
+		)
+		return
+	}
+
+	var extID string
+	var err error
+	if state == smsgateway.ProcessingStateDelivered {
+		extID, err = s.messages.SetRecipientDeliveredByRef(ctx, report.Reference, report.Phone)
+	} else {
+		extID, err = s.messages.SetRecipientFailedByRef(ctx, report.Reference, report.Phone, reason)
+	}
+	if errors.Is(err, ErrNotFound) {
+		// No Sent recipient owns this reference (duplicate report, unknown
+		// message, MR reused after a wrap, or the report was not requested).
+		s.logger.Debug("delivery report ignored: no matching recipient",
+			zap.Int("ref", report.Reference),
+			zap.Int("status", int(report.Status)),
+		)
+		return
+	}
+	if err != nil {
+		s.logger.Error("apply delivery report", zap.Error(err))
+		return
+	}
+
+	s.logger.Debug("delivery report applied",
+		zap.String("ext_id", extID),
+		zap.Int("ref", report.Reference),
+		zap.String("state", string(state)),
+	)
+	if state == smsgateway.ProcessingStateDelivered {
+		s.metrics.DeliveredTotal.Inc()
+	} else {
+		s.metrics.FailedTotal.Inc()
+	}
+
+	// Re-derive the message state from its recipients: all Delivered flips
+	// the message to Delivered, all-terminal-with-at-least-one-Failed flips
+	// it to Failed. resolveFinalState mirrors the send-batch resolution, so
+	// the same mixed-outcome rules apply; SetState guards keep terminal
+	// states terminal.
+	message, err := s.messages.GetByID(ctx, extID)
+	if err != nil {
+		s.logger.Error("load delivery-reported message", zap.Error(err))
+		return
+	}
+
+	states := make([]smsgateway.ProcessingState, 0, len(message.Recipients))
+	for _, recipient := range message.Recipients {
+		states = append(states, recipient.State)
+	}
+	if finalState := s.resolveFinalState(states); finalState != message.State {
+		if stateErr := s.messages.SetState(ctx, extID, finalState); stateErr != nil {
+			s.logger.Error("set message state after delivery report", zap.Error(stateErr))
+		}
+	}
+}
+
+// deliveryReportState maps a raw TP-ST octet onto the recipient state the
+// report demands, following the Android gateway's classification (3GPP TS
+// 23.040 9.2.3.15):
+//
+//   - 0x00..0x1F: the message reached the recipient - Delivered.
+//   - 0x20..0x3F: temporary error - the SC is (or was) retrying; the
+//     recipient stays Sent and the report is ignored (handled=false).
+//   - 0x40..0x7F: permanent error - Failed with the status as the reason.
+func deliveryReportState(status byte) (smsgateway.ProcessingState, string, bool) {
+	switch {
+	case status < 0x20: //nolint:mnd // TP-ST class boundaries
+		return smsgateway.ProcessingStateDelivered, "", true
+	case status < 0x40: //nolint:mnd // TP-ST class boundaries
+		return "", "", false
+	default:
+		return smsgateway.ProcessingStateFailed,
+			fmt.Sprintf("delivery report: SC status 0x%02X", status), true
+	}
+}
+
+// processPending claims the next due message and sends every claimable
+// recipient, then persists the resolved message state. It reports whether a
+// message was claimed so the caller can drain the queue in a loop.
 func (s *Service) processPending(ctx context.Context) bool {
 	message, err := s.messages.DequeueNextPending(ctx)
 	if errors.Is(err, ErrNotFound) {
@@ -169,6 +302,11 @@ func (s *Service) processPending(ctx context.Context) bool {
 	return true
 }
 
+// processRecipient sends the text of one recipient through the modem: the
+// text is validated against the segment cap, sent (with a delivery report
+// unless opted out) and the recipient is marked Sent with the reference of
+// the last accepted part; validation or send failures mark it Failed with the
+// reason. It returns the state recorded for the recipient.
 func (s *Service) processRecipient(
 	ctx context.Context,
 	message *Message,
@@ -183,7 +321,9 @@ func (s *Service) processRecipient(
 	}
 
 	if message.TextContent == nil {
-		return recipient.State, s.messages.SetRecipientFailed(
+		s.metrics.FailedTotal.Inc()
+
+		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
 			ctx,
 			message.ID,
 			recipient.PhoneNumber,
@@ -191,8 +331,14 @@ func (s *Service) processRecipient(
 		)
 	}
 
-	refID, err := s.modemSvc.SendSMS(ctx, recipient.PhoneNumber, message.TextContent.Text)
-	if err != nil {
+	// Preflight the part count BEFORE any modem traffic: the encode is
+	// deterministic and a text that cannot be sent within the configured cap
+	// must never burn modem commands. The check mirrors the send-path
+	// encoding (GSM-7 default alphabet, UCS-2 fallback), so a text passing
+	// here always fits the cap.
+	if err := modem.ValidateText(message.TextContent.Text, s.config.MaxSegments); err != nil {
+		s.metrics.FailedTotal.Inc()
+
 		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
 			ctx,
 			message.ID,
@@ -201,9 +347,44 @@ func (s *Service) processRecipient(
 		)
 	}
 
-	return smsgateway.ProcessingStateSent, s.messages.SetRecipientSent(ctx, message.ID, recipient.PhoneNumber, refID)
+	// A missing withDeliveryReport option defaults to TRUE (ecosystem
+	// parity): the SC is asked for a status report unless the client
+	// explicitly opted out. The reference of the LAST accepted part is
+	// stored below and matches the TP-MR of the report requested on that
+	// part.
+	refs, err := s.modemSvc.SendSMS(
+		ctx,
+		recipient.PhoneNumber,
+		message.TextContent.Text,
+		lo.FromPtrOr(message.WithDeliveryReport, true),
+	)
+	if err != nil {
+		s.metrics.FailedTotal.Inc()
+
+		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
+			ctx,
+			message.ID,
+			recipient.PhoneNumber,
+			err.Error(),
+		)
+	}
+
+	// ref_id stores the reference of the LAST accepted part: a recipient is
+	// Sent only when the whole multi-part sequence reached the modem.
+	s.metrics.SentTotal.Inc()
+
+	return smsgateway.ProcessingStateSent, s.messages.SetRecipientSent(
+		ctx,
+		message.ID,
+		recipient.PhoneNumber,
+		refs[len(refs)-1],
+	)
 }
 
+// resolveFinalState derives the message-level state from the recipient
+// states: any recipient still Pending/Cancelled/Processed keeps the message in
+// that state, all-Failed resolves to Failed, all-Delivered to Delivered and
+// any other mix stays Sent.
 func (s *Service) resolveFinalState(states []smsgateway.ProcessingState) smsgateway.ProcessingState {
 	finalState := smsgateway.ProcessingStateSent
 
@@ -222,4 +403,26 @@ func (s *Service) resolveFinalState(states []smsgateway.ProcessingState) smsgate
 	}
 
 	return finalState
+}
+
+// cleanPhoneNumber parses the input as a phone number of the configured
+// default region, requires a valid mobile number and returns its canonical
+// E.164 form. The region is only used for numbers without an international
+// prefix.
+func (s *Service) cleanPhoneNumber(input string) (string, error) {
+	phone, err := phonenumbers.Parse(input, s.config.DefaultRegion)
+	if err != nil {
+		return input, fmt.Errorf("%w: %s", ErrInvalidPhoneNumbers, err.Error())
+	}
+
+	if !phonenumbers.IsValidNumber(phone) {
+		return input, fmt.Errorf("%w: invalid phone number", ErrInvalidPhoneNumbers)
+	}
+
+	phoneNumberType := phonenumbers.GetNumberType(phone)
+	if phoneNumberType != phonenumbers.MOBILE && phoneNumberType != phonenumbers.FIXED_LINE_OR_MOBILE {
+		return input, fmt.Errorf("%w: not mobile phone number", ErrInvalidPhoneNumbers)
+	}
+
+	return phonenumbers.Format(phone, phonenumbers.E164), nil
 }

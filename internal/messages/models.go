@@ -21,6 +21,8 @@ type stateModel struct {
 	At    time.Time                  `json:"at"`
 }
 
+// String returns the JSON wire form of the state-history entry, matching how
+// entries are stored in the states column.
 func (s stateModel) String() string {
 	return string(lo.Must(json.Marshal(s)))
 }
@@ -41,6 +43,8 @@ func (s statesModel) toDomainMap() map[string]time.Time {
 	return states
 }
 
+// Latest returns the newest entry of the ordered state history, or nil when
+// the history is empty.
 func (s statesModel) Latest() *stateModel {
 	if len(s) == 0 {
 		return nil
@@ -114,8 +118,14 @@ func newMessageModel(msg *MessageInput, now time.Time) (*messageModel, error) {
 
 // messageContent maps the type/content columns onto the domain content. Text
 // and data bodies are stored as JSON of the wire DTOs; a hashed message
-// stores the hash verbatim (matching the server convention).
+// stores the hash verbatim (matching the server convention). A message with
+// omitted content (the content column was excluded from the query) maps to a
+// content-free domain value, whether or not the row is hashed.
 func (m *messageModel) messageContent() (MessageStateContent, error) {
+	if m.Content == "" {
+		return MessageStateContent{}, nil
+	}
+
 	if m.IsHashed {
 		return MessageStateContent{
 			MessageContent: MessageContent{
@@ -169,18 +179,11 @@ func (m *messageModel) toDomain() (*Message, error) {
 		return nil, err
 	}
 
-	var ttl *uint64
-	if m.ValidUntil != nil {
-		remaining := max(m.ValidUntil.Sub(m.CreatedAt), 0)
-		ttl = lo.ToPtr(uint64(remaining / time.Second))
-	}
-
 	message := &Message{
 		MessageStateContent: content,
 		MessageOptions: MessageOptions{
 			SimNumber:          m.Options.SimNumber,
 			WithDeliveryReport: m.Options.WithDeliveryReport,
-			TTL:                ttl,
 			ValidUntil:         m.ValidUntil,
 			ScheduleAt:         m.ScheduleAt,
 			Priority:           smsgateway.MessagePriority(m.Priority),

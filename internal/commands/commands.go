@@ -7,6 +7,8 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+// Commands returns the root CLI commands (serve and send) wired with the
+// build version.
 func Commands(version healthfx.Version) []*cli.Command {
 	return []*cli.Command{
 		serve.Command(version),
