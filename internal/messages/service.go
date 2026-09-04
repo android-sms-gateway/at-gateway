@@ -11,6 +11,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	gonanoid "github.com/matoous/go-nanoid/v2"
+	"github.com/nyaruka/phonenumbers"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 )
@@ -52,13 +53,32 @@ func NewService(
 	}
 }
 
+// EnqueueOptions controls how an enqueued message is prepared.
+type EnqueueOptions struct {
+	// SkipPhoneValidation disables E.164 validation and normalization of
+	// phone numbers; numbers are stored verbatim.
+	SkipPhoneValidation bool
+}
+
 // Enqueue validates the input, generates the ext_id when absent (the service
 // is the SOLE ext_id generator), resolves the device ID and persists the
 // message as Pending. The returned message carries the resolved device ID.
-func (s *Service) Enqueue(ctx context.Context, input MessageInput) (*Message, error) {
+func (s *Service) Enqueue(ctx context.Context, input MessageInput, opts EnqueueOptions) (*Message, error) {
 	// At least one non-empty phone number.
 	if len(input.PhoneNumbers) == 0 || slices.Contains(input.PhoneNumbers, "") {
 		return nil, ErrInvalidPhoneNumbers
+	}
+
+	// Normalize phone numbers unless explicitly skipped. Encrypted phone
+	// payloads are opaque and bypass validation the same way.
+	if !input.IsEncrypted && !opts.SkipPhoneValidation {
+		for i, v := range input.PhoneNumbers {
+			phone, err := cleanPhoneNumber(v)
+			if err != nil {
+				return nil, fmt.Errorf("failed to use phone in row %d: %w", i+1, err)
+			}
+			input.PhoneNumbers[i] = phone
+		}
 	}
 
 	if input.ExtID == "" {
@@ -222,4 +242,22 @@ func (s *Service) resolveFinalState(states []smsgateway.ProcessingState) smsgate
 	}
 
 	return finalState
+}
+
+func cleanPhoneNumber(input string) (string, error) {
+	phone, err := phonenumbers.Parse(input, "RU")
+	if err != nil {
+		return input, fmt.Errorf("%w: %s", ErrInvalidPhoneNumbers, err.Error())
+	}
+
+	if !phonenumbers.IsValidNumber(phone) {
+		return input, fmt.Errorf("%w: invalid phone number", ErrInvalidPhoneNumbers)
+	}
+
+	phoneNumberType := phonenumbers.GetNumberType(phone)
+	if phoneNumberType != phonenumbers.MOBILE && phoneNumberType != phonenumbers.FIXED_LINE_OR_MOBILE {
+		return input, fmt.Errorf("%w: not mobile phone number", ErrInvalidPhoneNumbers)
+	}
+
+	return phonenumbers.Format(phone, phonenumbers.E164), nil
 }

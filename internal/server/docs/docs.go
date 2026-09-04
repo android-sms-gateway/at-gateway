@@ -422,7 +422,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Enqueues a message for sending. The single registered device is used; ` + "`" + `deviceId` + "`" + ` is accepted but ignored.",
+                "description": "Enqueues a message for sending. If ` + "`" + `deviceId` + "`" + ` is set, the specified device is used; otherwise a random registered device is chosen.",
                 "consumes": [
                     "application/json"
                 ],
@@ -435,6 +435,12 @@ const docTemplate = `{
                 ],
                 "summary": "Enqueue message",
                 "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Skip phone validation",
+                        "name": "skipPhoneValidation",
+                        "in": "query"
+                    },
                     {
                         "description": "Send message request",
                         "name": "request",
@@ -477,7 +483,7 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Message with such ID already exists",
+                        "description": "Message with the same ID already exists",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }

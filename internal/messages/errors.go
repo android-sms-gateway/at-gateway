@@ -1,6 +1,8 @@
 package messages
 
-import "errors"
+import (
+	"errors"
+)
 
 var (
 	ErrNotFound           = errors.New("message not found")
@@ -20,9 +22,7 @@ var (
 	// (neither text, data nor hash) or carries conflicting content kinds.
 	ErrInvalidContent = errors.New("invalid message content")
 
-	// ErrInvalidPhoneNumbers is returned when the message carries no phone
-	// numbers or contains an empty one.
-	ErrInvalidPhoneNumbers = errors.New("message must contain at least one non-empty phone number")
+	ErrInvalidPhoneNumbers = errors.New("invalid phone number")
 
 	ErrDeviceNotFound = errors.New("device not found")
 )

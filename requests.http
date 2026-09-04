@@ -64,6 +64,16 @@ Content-Type: application/json
 {"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"Hello from at-gateway"}}
 
 ###
+# Enqueue with skipPhoneValidation=true -> 202; phone numbers stored verbatim
+# without E.164 validation/normalization
+# @name postMessageSkipValidation
+POST {{baseURL}}/api/v1/messages?skipPhoneValidation=true HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"Hello from at-gateway"}}
+
+###
 @messageID={{postMessage.response.body.$.id}}
 
 ###

@@ -16,6 +16,7 @@ require (
 	github.com/go-playground/validator/v10 v10.28.0
 	github.com/gofiber/fiber/v2 v2.52.14
 	github.com/matoous/go-nanoid/v2 v2.1.0
+	github.com/nyaruka/phonenumbers v1.8.1
 	github.com/pressly/goose/v3 v3.26.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/samber/lo v1.53.0
