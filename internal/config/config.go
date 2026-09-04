@@ -50,8 +50,9 @@ type databaseConfig struct {
 }
 
 type messagesConfig struct {
-	PollInterval time.Duration `koanf:"poll_interval"`
-	MaxSegments  int           `koanf:"max_segments"`
+	PollInterval  time.Duration `koanf:"poll_interval"`
+	MaxSegments   int           `koanf:"max_segments"`
+	DefaultRegion string        `koanf:"default_region"`
 }
 
 type Config struct {
@@ -99,8 +100,9 @@ func Default() Config {
 			URL: "sqlite://data/gateway.db",
 		},
 		Messages: messagesConfig{
-			PollInterval: time.Second,
-			MaxSegments:  10,
+			PollInterval:  time.Second,
+			MaxSegments:   10,
+			DefaultRegion: "RU",
 		},
 	}
 }

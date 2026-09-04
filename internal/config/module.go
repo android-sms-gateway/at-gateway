@@ -64,8 +64,9 @@ func Module() fx.Option {
 			},
 			func(cfg Config) messages.Config {
 				return messages.Config{
-					PollInterval: cfg.Messages.PollInterval,
-					MaxSegments:  cfg.Messages.MaxSegments,
+					PollInterval:  cfg.Messages.PollInterval,
+					MaxSegments:   cfg.Messages.MaxSegments,
+					DefaultRegion: cfg.Messages.DefaultRegion,
 				}
 			},
 			func(cfg Config) sqlfx.Config {

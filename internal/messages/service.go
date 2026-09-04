@@ -39,6 +39,9 @@ func NewService(
 	if config.PollInterval <= 0 {
 		config.PollInterval = time.Second
 	}
+	if config.DefaultRegion == "" {
+		config.DefaultRegion = defaultRegion
+	}
 
 	return &Service{
 		config:   config,
@@ -76,11 +79,10 @@ func (s *Service) Enqueue(ctx context.Context, input MessageInput, opts EnqueueO
 		return nil, ErrInvalidPhoneNumbers
 	}
 
-	// Normalize phone numbers unless explicitly skipped. Encrypted phone
-	// payloads are opaque and bypass validation the same way.
-	if !input.IsEncrypted && !opts.SkipPhoneValidation {
+	// Normalize phone numbers unless explicitly skipped.
+	if !opts.SkipPhoneValidation {
 		for i, v := range input.PhoneNumbers {
-			phone, err := cleanPhoneNumber(v)
+			phone, err := s.cleanPhoneNumber(v)
 			if err != nil {
 				return nil, fmt.Errorf("failed to use phone in row %d: %w", i+1, err)
 			}
@@ -280,8 +282,12 @@ func (s *Service) resolveFinalState(states []smsgateway.ProcessingState) smsgate
 	return finalState
 }
 
-func cleanPhoneNumber(input string) (string, error) {
-	phone, err := phonenumbers.Parse(input, "RU")
+// cleanPhoneNumber parses the input as a phone number of the configured
+// default region, requires a valid mobile number and returns its canonical
+// E.164 form. The region is only used for numbers without an international
+// prefix.
+func (s *Service) cleanPhoneNumber(input string) (string, error) {
+	phone, err := phonenumbers.Parse(input, s.config.DefaultRegion)
 	if err != nil {
 		return input, fmt.Errorf("%w: %s", ErrInvalidPhoneNumbers, err.Error())
 	}

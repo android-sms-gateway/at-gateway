@@ -20,6 +20,10 @@ import (
 // storage-backed devices service and a plain-constructor metrics registry,
 // then returns a *messages.Service ready for Enqueue calls.
 func newService(t *testing.T) *messages.Service {
+	return newServiceWithConfig(t, messages.Config{})
+}
+
+func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Service {
 	t.Helper()
 
 	repo, _ := newRepository(t)
@@ -49,7 +53,7 @@ func newService(t *testing.T) *messages.Service {
 		),
 	}
 
-	return messages.NewService(messages.Config{}, repo, devicesSvc, nil, metrics, zap.NewNop())
+	return messages.NewService(config, repo, devicesSvc, nil, metrics, zap.NewNop())
 }
 
 func newEnqueueInput(extID string, phones ...string) messages.MessageInput {
@@ -92,6 +96,39 @@ func TestEnqueue_PhoneValidation(t *testing.T) {
 				t.Errorf("phone number = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestEnqueue_ConfiguredDefaultRegion pins the configurable region used to
+// parse national phone numbers: a German mobile in national format is valid
+// under DefaultRegion "DE" but rejected under the default "RU" fallback.
+func TestEnqueue_ConfiguredDefaultRegion(t *testing.T) {
+	const germanMobile = "015123456789"
+	const germanMobileE164 = "+4915123456789"
+
+	svc := newServiceWithConfig(t, messages.Config{DefaultRegion: "DE"})
+
+	msg, err := svc.Enqueue(
+		context.Background(),
+		newEnqueueInput("region-de", germanMobile),
+		messages.EnqueueOptions{},
+	)
+	if err != nil {
+		t.Fatalf("enqueue message with DE region: %v", err)
+	}
+	if got := msg.Recipients[0].PhoneNumber; got != germanMobileE164 {
+		t.Errorf("phone number = %q, want %q", got, germanMobileE164)
+	}
+
+	ruSvc := newService(t)
+
+	_, err = ruSvc.Enqueue(
+		context.Background(),
+		newEnqueueInput("region-ru", germanMobile),
+		messages.EnqueueOptions{},
+	)
+	if !errors.Is(err, messages.ErrInvalidPhoneNumbers) {
+		t.Errorf("error = %v, want ErrInvalidPhoneNumbers under the RU fallback", err)
 	}
 }
 

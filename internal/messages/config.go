@@ -2,10 +2,9 @@ package messages
 
 import "time"
 
-// maxSegmentsDefault is the default cap on the number of concatenated SMS
-// parts a single text may occupy. Carriers commonly limit multi-part
-// messages well below the protocol ceiling of 255 parts.
-const maxSegmentsDefault = 10
+// defaultRegion is the default region used to interpret phone numbers
+// without an international prefix (see Config.DefaultRegion).
+const defaultRegion = "RU"
 
 // Config holds the messages service and background worker configuration.
 type Config struct {
@@ -18,12 +17,9 @@ type Config struct {
 	// traffic. Zero disables the cap (the 255-part protocol ceiling always
 	// applies).
 	MaxSegments int
-}
 
-// Default returns the default messages configuration.
-func Default() Config {
-	return Config{
-		PollInterval: time.Second,
-		MaxSegments:  maxSegmentsDefault,
-	}
+	// DefaultRegion is the ISO 3166-1 alpha-2 country code used to parse
+	// phone numbers without an international prefix during E.164
+	// validation; empty falls back to "RU".
+	DefaultRegion string
 }
