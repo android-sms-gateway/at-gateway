@@ -20,4 +20,8 @@ var (
 	// errNoCMGSLine is returned by SendSMS when the +CMGS response carries no
 	// parseable message-reference line.
 	errNoCMGSLine = errors.New("no +CMGS line in response")
+
+	// errNotStatusReport is returned by DecodeDeliveryReport when the +CDS
+	// PDU body decodes to a TPDU that is not an SMS-STATUS-REPORT.
+	errNotStatusReport = errors.New("unexpected TPDU type")
 )

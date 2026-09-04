@@ -152,6 +152,8 @@ func (s *Service) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case report := <-s.modemSvc.DeliveryReports():
+			s.handleDeliveryReport(ctx, report)
 		case <-ticker.C:
 			for s.processPending(ctx) {
 				select {
@@ -161,6 +163,97 @@ func (s *Service) Run(ctx context.Context) error {
 				}
 			}
 		}
+	}
+}
+
+// handleDeliveryReport applies one +CDS status report to the recipient that
+// requested it and re-derives the message state. It runs on the Run loop
+// goroutine, so database work is serialized with message processing. Errors
+// are logged and swallowed - a status report must never take the worker
+// down.
+func (s *Service) handleDeliveryReport(ctx context.Context, report modem.DeliveryReport) {
+	state, reason, handled := deliveryReportState(report.Status)
+	if !handled {
+		// The SC reports a temporary error (0x20..0x3F) and will retry on
+		// its own; the recipient stays Sent.
+		s.logger.Debug("delivery report ignored: temporary error",
+			zap.Int("ref", report.Reference),
+			zap.Int("status", int(report.Status)),
+		)
+		return
+	}
+
+	var extID string
+	var err error
+	if state == smsgateway.ProcessingStateDelivered {
+		extID, err = s.messages.SetRecipientDeliveredByRef(ctx, report.Reference, report.Phone)
+	} else {
+		extID, err = s.messages.SetRecipientFailedByRef(ctx, report.Reference, report.Phone, reason)
+	}
+	if errors.Is(err, ErrNotFound) {
+		// No Sent recipient owns this reference (duplicate report, unknown
+		// message, MR reused after a wrap, or the report was not requested).
+		s.logger.Debug("delivery report ignored: no matching recipient",
+			zap.Int("ref", report.Reference),
+			zap.Int("status", int(report.Status)),
+		)
+		return
+	}
+	if err != nil {
+		s.logger.Error("apply delivery report", zap.Error(err))
+		return
+	}
+
+	s.logger.Debug("delivery report applied",
+		zap.String("ext_id", extID),
+		zap.Int("ref", report.Reference),
+		zap.String("state", string(state)),
+	)
+	if state == smsgateway.ProcessingStateDelivered {
+		s.metrics.DeliveredTotal.Inc()
+	} else {
+		s.metrics.FailedTotal.Inc()
+	}
+
+	// Re-derive the message state from its recipients: all Delivered flips
+	// the message to Delivered, all-terminal-with-at-least-one-Failed flips
+	// it to Failed. resolveFinalState mirrors the send-batch resolution, so
+	// the same mixed-outcome rules apply; SetState guards keep terminal
+	// states terminal.
+	message, err := s.messages.GetByID(ctx, extID)
+	if err != nil {
+		s.logger.Error("load delivery-reported message", zap.Error(err))
+		return
+	}
+
+	states := make([]smsgateway.ProcessingState, 0, len(message.Recipients))
+	for _, recipient := range message.Recipients {
+		states = append(states, recipient.State)
+	}
+	if finalState := s.resolveFinalState(states); finalState != message.State {
+		if stateErr := s.messages.SetState(ctx, extID, finalState); stateErr != nil {
+			s.logger.Error("set message state after delivery report", zap.Error(stateErr))
+		}
+	}
+}
+
+// deliveryReportState maps a raw TP-ST octet onto the recipient state the
+// report demands, following the Android gateway's classification (3GPP TS
+// 23.040 9.2.3.15):
+//
+//   - 0x00..0x1F: the message reached the recipient - Delivered.
+//   - 0x20..0x3F: temporary error - the SC is (or was) retrying; the
+//     recipient stays Sent and the report is ignored (handled=false).
+//   - 0x40..0x7F: permanent error - Failed with the status as the reason.
+func deliveryReportState(status byte) (smsgateway.ProcessingState, string, bool) {
+	switch {
+	case status < 0x20: //nolint:mnd // TP-ST class boundaries
+		return smsgateway.ProcessingStateDelivered, "", true
+	case status < 0x40: //nolint:mnd // TP-ST class boundaries
+		return "", "", false
+	default:
+		return smsgateway.ProcessingStateFailed,
+			fmt.Sprintf("delivery report: SC status 0x%02X", status), true
 	}
 }
 
@@ -238,7 +331,17 @@ func (s *Service) processRecipient(
 		)
 	}
 
-	refs, err := s.modemSvc.SendSMS(ctx, recipient.PhoneNumber, message.TextContent.Text)
+	// A missing withDeliveryReport option defaults to TRUE (ecosystem
+	// parity): the SC is asked for a status report unless the client
+	// explicitly opted out. The reference of the LAST accepted part is
+	// stored below and matches the TP-MR of the report requested on that
+	// part.
+	refs, err := s.modemSvc.SendSMS(
+		ctx,
+		recipient.PhoneNumber,
+		message.TextContent.Text,
+		lo.FromPtrOr(message.WithDeliveryReport, true),
+	)
 	if err != nil {
 		s.metrics.FailedTotal.Inc()
 

@@ -98,6 +98,9 @@ func newHandlerApp(t *testing.T) *fiber.App {
 		SentTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{Name: "handler_test_sent_total", Help: "Test counter"},
 		),
+		DeliveredTotal: prometheus.NewCounter(
+			prometheus.CounterOpts{Name: "handler_test_delivered_total", Help: "Test counter"},
+		),
 		FailedTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{Name: "handler_test_failed_total", Help: "Test counter"},
 		),

@@ -199,6 +199,105 @@ func (r *Repository) SetRecipientFailed(ctx context.Context, messageID, phoneNum
 	)
 }
 
+// SetRecipientDeliveredByRef flips the recipient whose stored message
+// reference matches refID to Delivered, and returns the ext_id of the
+// message that owns the recipient. The update is guarded so it only touches
+// a recipient that is CURRENTLY Sent, belongs to a delivery-report-enabled
+// message (options.with_delivery_report != false; an absent option is the
+// default-true case) and whose stored phone matches phone when phone is
+// non-empty - a status report can only transition the exact send that
+// requested it. phone carries the bare TP-RA digits (no leading '+'), so the
+// stored E.164 form is compared without its plus. When several open
+// recipients share a reference (8-bit MR wrap) the OLDEST is picked. No
+// match yields ErrNotFound; a duplicate report is a no-op match failure
+// because the recipient already left the Sent state.
+//
+// The reverse lookup runs as one raw statement: recipients have no ext_id,
+// so the row is selected through a nested SELECT joined on the message
+// options, and the message ext_id is returned with a correlated RETURNING
+// subquery.
+func (r *Repository) SetRecipientDeliveredByRef(ctx context.Context, refID int, phone string) (string, error) {
+	now := time.Now().UTC()
+	entry := stateModel{State: smsgateway.ProcessingStateDelivered, At: now}
+
+	var extID string
+
+	err := r.db.NewRaw(`
+		UPDATE message_recipients
+		SET states = json_insert(states, '$[#]', json(?))
+		WHERE id = (
+			SELECT mr.id
+			FROM message_recipients mr
+			JOIN messages m ON m.id = mr.message_id
+			WHERE mr.ref_id = ?
+				AND json_extract(mr.states, '$[#-1].state') = ?
+				AND json_extract(m.options, '$.with_delivery_report') IS NOT 0
+				AND (? = '' OR replace(mr.phone, '+', '') = ?)
+			ORDER BY mr.id ASC
+			LIMIT 1
+		)
+		RETURNING (SELECT m.ext_id FROM messages m WHERE m.id = message_recipients.message_id)`,
+		entry.String(),
+		refID,
+		smsgateway.ProcessingStateSent,
+		phone,
+		phone,
+	).Scan(ctx, &extID)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrNotFound
+	case err != nil:
+		return "", fmt.Errorf("set recipient state %s: %w", smsgateway.ProcessingStateDelivered, err)
+	}
+
+	return extID, nil
+}
+
+// SetRecipientFailedByRef flips the recipient whose stored message reference
+// matches refID to Failed with the given reason, mirroring
+// SetRecipientDeliveredByRef guards and semantics; it returns the ext_id of
+// the owning message.
+func (r *Repository) SetRecipientFailedByRef(ctx context.Context, refID int, phone, reason string) (string, error) {
+	now := time.Now().UTC()
+	entry := stateModel{State: smsgateway.ProcessingStateFailed, At: now}
+
+	var extID string
+
+	err := r.db.NewRaw(`
+		UPDATE message_recipients
+		SET states = json_insert(states, '$[#]', json(?)),
+			error = ?
+		WHERE id = (
+			SELECT mr.id
+			FROM message_recipients mr
+			JOIN messages m ON m.id = mr.message_id
+			WHERE mr.ref_id = ?
+				AND json_extract(mr.states, '$[#-1].state') = ?
+				AND json_extract(m.options, '$.with_delivery_report') IS NOT 0
+				AND (? = '' OR replace(mr.phone, '+', '') = ?)
+			ORDER BY mr.id ASC
+			LIMIT 1
+		)
+		RETURNING (SELECT m.ext_id FROM messages m WHERE m.id = message_recipients.message_id)`,
+		entry.String(),
+		reason,
+		refID,
+		smsgateway.ProcessingStateSent,
+		phone,
+		phone,
+	).Scan(ctx, &extID)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrNotFound
+	case err != nil:
+		return "", fmt.Errorf("set recipient state %s: %w", smsgateway.ProcessingStateFailed, err)
+	}
+
+	return extID, nil
+}
+
 func (r *Repository) updateRecipientState(
 	ctx context.Context,
 	messageID, phone string,

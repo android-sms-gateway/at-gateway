@@ -9,6 +9,7 @@ import (
 type Metrics struct {
 	EnqueuedTotal  prometheus.Counter
 	SentTotal      prometheus.Counter
+	DeliveredTotal prometheus.Counter
 	FailedTotal    prometheus.Counter
 	CancelledTotal prometheus.Counter
 }
@@ -27,6 +28,12 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{
 				Name: "at_gateway_messages_sent_total",
 				Help: "Total number of messages sent by the worker",
+			},
+		),
+		DeliveredTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_messages_delivered_total",
+				Help: "Total number of messages confirmed delivered by a status report",
 			},
 		),
 		FailedTotal: promauto.NewCounter(

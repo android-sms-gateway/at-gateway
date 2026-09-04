@@ -62,9 +62,12 @@ func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 }
 
 // Init runs the boot init sequence in exact order: AT, ATE0, +CMEE=1,
-// +CMGF=0, +CNMI=2,1,0,0,0 and the +CPIN? READY gate. The modem is left in
+// +CMGF=0, +CNMI=2,1,0,1,0 and the +CPIN? READY gate. The modem is left in
 // PDU mode (+CMGF=0): text mode cannot carry a user data header, so every
-// send - single- and multi-part alike - is a PDU exchange.
+// send - single- and multi-part alike - is a PDU exchange. The +CNMI <ds>=1
+// routes SMS-STATUS-REPORT URCs (+CDS) to the TE; reports are only ever
+// generated when a send requests one (TP-SRR), so the routing change is
+// inert for sends without a delivery report.
 //
 // The ctx parameter is INERT per command: the library has no context support,
 // so an in-flight command always runs to its own per-command timeout. ctx is
@@ -76,7 +79,7 @@ func (c *Commands) Init(ctx context.Context) error {
 		{cmd: "E0", display: "ATE0", tag: "echo off"},
 		{cmd: "+CMEE=1", display: "AT+CMEE=1", tag: "verbose errors"},
 		{cmd: "+CMGF=0", display: "AT+CMGF=0", tag: "PDU mode"},
-		{cmd: "+CNMI=2,1,0,0,0", display: "AT+CNMI=2,1,0,0,0", tag: "SMS routing"},
+		{cmd: "+CNMI=2,1,0,1,0", display: "AT+CNMI=2,1,0,1,0", tag: "SMS routing"},
 		{cmd: "+CPIN?", display: "AT+CPIN?", tag: "SIM PIN"},
 	}
 
@@ -456,6 +459,15 @@ func (c *Commands) mapCommandError(cmd initCommand, err error) error {
 // phone number never appears on the command line in PDU mode, so the
 // text-mode quote/CR/LF injection guard does not apply.
 //
+// When withDeliveryReport is true, the TP-SRR bit of the LAST part is set
+// (the modem requests a status report from the SC for that part; the SC
+// never generates reports for parts that do not request one). The last part
+// is the single part whose reference the +CMGS responses expose to callers:
+// the whole concatenated message counts as delivered when the last part
+// reached the phone, and the report's TP-MR matches the last returned
+// reference. Earlier parts never carry TP-SRR, so a recipient produces at
+// most one report and the report cannot be mis-attributed to a sibling part.
+//
 // It returns one message reference <mr> per part ACCEPTED by the modem. On a
 // mid-sequence failure (a part rejected after earlier parts were accepted)
 // the references of the accepted parts are returned together with an error
@@ -469,7 +481,7 @@ func (c *Commands) mapCommandError(cmd initCommand, err error) error {
 // through the same drain semantics as exec). The ctx is INERT per command (the
 // library has no context support): it is checked before the encode and between
 // parts only.
-func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) ([]int, error) {
+func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string, withDeliveryReport bool) ([]int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("send SMS: %w", err)
 	}
@@ -491,6 +503,15 @@ func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) ([]int
 			len(pdus),
 			smsMaxParts,
 		)
+	}
+
+	// Request the status report on the LAST part only: the SC answers one
+	// report per TP-SRR request and only the last part's reference is exposed
+	// to callers (see the method docs), keeping the report-to-recipient
+	// mapping 1:1. The bit is OR-ed after the shared encoder ran, so the
+	// encoder's internal state stays untouched.
+	if withDeliveryReport {
+		pdus[len(pdus)-1].FirstOctet |= tpdu.FoSRR
 	}
 
 	refs := make([]int, 0, len(pdus))

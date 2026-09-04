@@ -45,6 +45,9 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 		SentTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{Name: "test_sent_total", Help: "Test counter"},
 		),
+		DeliveredTotal: prometheus.NewCounter(
+			prometheus.CounterOpts{Name: "test_delivered_total", Help: "Test counter"},
+		),
 		FailedTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{Name: "test_failed_total", Help: "Test counter"},
 		),

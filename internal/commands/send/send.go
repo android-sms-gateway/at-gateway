@@ -54,6 +54,11 @@ func Command() *cli.Command {
 				Name:  "timeout",
 				Usage: "Per-command modem timeout (default: modem.command_timeout config)",
 			},
+			&cli.BoolFlag{
+				Name:  "delivery-report",
+				Usage: "Request a delivery report from the SC (default: true; the one-shot CLI exits before reports arrive, so it is only observable on the modem)",
+				Value: true,
+			},
 		},
 		Action: run,
 	}
@@ -120,7 +125,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		zap.Int("sim", sim),
 	)
 
-	refs, err := commands.SendSMS(ctx, phone, text)
+	refs, err := commands.SendSMS(ctx, phone, text, cmd.Bool("delivery-report"))
 	if err != nil {
 		return cli.Exit(fmt.Errorf("send SMS: %w", err), 1)
 	}

@@ -93,7 +93,7 @@ func okResponse(body string) []byte {
 // with OK, +CPIN? with a READY status line followed by OK.
 func initResponder(w string) [][]byte {
 	switch w {
-	case "AT\r\n", "ATE0\r\n", "AT+CMEE=1\r\n", "AT+CMGF=0\r\n", "AT+CNMI=2,1,0,0,0\r\n":
+	case "AT\r\n", "ATE0\r\n", "AT+CMEE=1\r\n", "AT+CMGF=0\r\n", "AT+CNMI=2,1,0,1,0\r\n":
 		return [][]byte{okResponse("OK")}
 	case "AT+CPIN?\r\n":
 		return [][]byte{okResponse("+CPIN: READY"), okResponse("OK")}
@@ -215,7 +215,7 @@ func TestSendSMS_SinglePart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	refs, err := commands.SendSMS(ctx, testPhone, "hello")
+	refs, err := commands.SendSMS(ctx, testPhone, "hello", false)
 	if err != nil {
 		t.Fatalf("SendSMS: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestSendSMS_UCS2Fallback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	refs, err := commands.SendSMS(ctx, testPhone, "привет")
+	refs, err := commands.SendSMS(ctx, testPhone, "привет", false)
 	if err != nil {
 		t.Fatalf("SendSMS: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestSendSMS_MultiPart(t *testing.T) {
 
 	longText := strings.Repeat("a", 161)
 
-	refs, err := commands.SendSMS(ctx, testPhone, longText)
+	refs, err := commands.SendSMS(ctx, testPhone, longText, false)
 	if err != nil {
 		t.Fatalf("SendSMS: %v", err)
 	}
@@ -308,6 +308,78 @@ func TestSendSMS_MultiPart(t *testing.T) {
 	}
 }
 
+// TestSendSMS_SinglePartDeliveryReport pins the TP-SRR request of a
+// delivery-report send: the single part's first octet gains the 0x20 SRR bit
+// (0x01 -> 0x21); the message reference the modem echoes back is the TP-MR
+// the SC will answer in the status report.
+func TestSendSMS_SinglePartDeliveryReport(t *testing.T) {
+	commands, m := newCommands(t, smsResponder("1"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	refs, err := commands.SendSMS(ctx, testPhone, "hello", true)
+	if err != nil {
+		t.Fatalf("SendSMS: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != 1 {
+		t.Fatalf("refs = %v, want [1]", refs)
+	}
+
+	sends := sendWrites(m.getWrites())
+	if len(sends) != 1 {
+		t.Fatalf("got %d sends, want 1", len(sends))
+	}
+	want := sendVector{
+		cmd:     "+CMGS=18",
+		payload: "0021010b919799001032f4000005e8329bfd06",
+	}
+	if !equalStrings(sends[0], want.writeLines()) {
+		t.Errorf("wire = %q, want %q", sends[0], want.writeLines())
+	}
+}
+
+// TestSendSMS_MultiPartDeliveryReportLastPart pins the last-part-only SRR
+// rule: of a two-part text only the LAST part's first octet carries the SRR
+// bit (0x41 -> 0x61); part one is untouched. The SC therefore answers at
+// most one status report, and its TP-MR is the last returned reference.
+func TestSendSMS_MultiPartDeliveryReportLastPart(t *testing.T) {
+	commands, m := newCommands(t, smsResponder("10", "11"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	longText := strings.Repeat("a", 161)
+
+	refs, err := commands.SendSMS(ctx, testPhone, longText, true)
+	if err != nil {
+		t.Fatalf("SendSMS: %v", err)
+	}
+	if len(refs) != 2 || refs[0] != 10 || refs[1] != 11 {
+		t.Fatalf("refs = %v, want [10 11]", refs)
+	}
+
+	sends := sendWrites(m.getWrites())
+	if len(sends) != 2 {
+		t.Fatalf("got %d sends, want 2", len(sends))
+	}
+	want := []sendVector{
+		{
+			cmd:     "+CMGS=153",
+			payload: "0041010b919799001032f40000a0050003010201c2e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3e170381c0e87c3",
+		},
+		{
+			cmd:     "+CMGS=27",
+			payload: "0061020b919799001032f400000f050003010202c2e170381c0e8701",
+		},
+	}
+	for i, w := range want {
+		if !equalStrings(sends[i], w.writeLines()) {
+			t.Errorf("part %d wire = %q, want %q", i, sends[i], w.writeLines())
+		}
+	}
+}
+
 // TestSendSMS_ConcatRefIncrements pins the shared-encoder behavior: two
 // back-to-back multi-part sends must not reuse the 8-bit concatenation
 // reference, or a receiving phone could interleave the parts. The reference
@@ -320,7 +392,7 @@ func TestSendSMS_ConcatRefIncrements(t *testing.T) {
 
 	longText := strings.Repeat("a", 161)
 	for i := range 2 {
-		if _, err := commands.SendSMS(ctx, testPhone, longText); err != nil {
+		if _, err := commands.SendSMS(ctx, testPhone, longText, false); err != nil {
 			t.Fatalf("SendSMS %d: %v", i, err)
 		}
 	}
@@ -354,7 +426,7 @@ func TestSendSMS_NotInitialized(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := commands.SendSMS(ctx, testPhone, "hello")
+	_, err := commands.SendSMS(ctx, testPhone, "hello", false)
 	if !errors.Is(err, modem.ErrModemNotStarted) {
 		t.Fatalf("SendSMS error = %v, want ErrModemNotStarted", err)
 	}
@@ -371,7 +443,7 @@ func TestSendSMS_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := commands.SendSMS(ctx, testPhone, "hello")
+	_, err := commands.SendSMS(ctx, testPhone, "hello", false)
 	if err == nil {
 		t.Fatal("SendSMS = nil error, want context error")
 	}
@@ -388,7 +460,7 @@ func TestSendSMS_EmptyText(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := commands.SendSMS(ctx, testPhone, "")
+	_, err := commands.SendSMS(ctx, testPhone, "", false)
 	if !errors.Is(err, modem.ErrInvalidText) {
 		t.Fatalf("SendSMS error = %v, want ErrInvalidText", err)
 	}
@@ -408,7 +480,7 @@ func TestSendSMS_ProtocolCeiling(t *testing.T) {
 
 	longText := strings.Repeat("a", 255*153+1)
 
-	_, err := commands.SendSMS(ctx, testPhone, longText)
+	_, err := commands.SendSMS(ctx, testPhone, longText, false)
 	if !errors.Is(err, modem.ErrInvalidText) {
 		t.Fatalf("SendSMS error = %v, want ErrInvalidText", err)
 	}
@@ -441,7 +513,7 @@ func TestSendSMS_RejectedByModem(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	refs, err := commands.SendSMS(ctx, testPhone, "hello")
+	refs, err := commands.SendSMS(ctx, testPhone, "hello", false)
 	if err == nil {
 		t.Fatal("SendSMS = nil error, want rejection")
 	}
@@ -468,7 +540,7 @@ func TestSendSMS_MidSequenceRejection(t *testing.T) {
 
 	longText := strings.Repeat("a", 161)
 
-	refs, err := commands.SendSMS(ctx, testPhone, longText)
+	refs, err := commands.SendSMS(ctx, testPhone, longText, false)
 	if err == nil {
 		t.Fatal("SendSMS = nil error, want rejection of part 2")
 	}
@@ -507,13 +579,13 @@ func TestSendSMS_TimeoutDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := commands.SendSMS(ctx, testPhone, strings.Repeat("a", 161))
+	_, err := commands.SendSMS(ctx, testPhone, strings.Repeat("a", 161), false)
 	if !errors.Is(err, modem.ErrModemTimeout) {
 		t.Fatalf("SendSMS error = %v, want ErrModemTimeout", err)
 	}
 
 	// The modem is healthy again: the next send must work...
-	if _, retryErr := commands.SendSMS(ctx, testPhone, strings.Repeat("a", 161)); retryErr != nil {
+	if _, retryErr := commands.SendSMS(ctx, testPhone, strings.Repeat("a", 161), false); retryErr != nil {
 		t.Fatalf("SendSMS after drain: %v", retryErr)
 	}
 
@@ -546,7 +618,7 @@ func TestSendSMS_NoCMGSLine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := commands.SendSMS(ctx, testPhone, "hello")
+	_, err := commands.SendSMS(ctx, testPhone, "hello", false)
 	if err == nil {
 		t.Fatal("SendSMS = nil error, want missing-reference failure")
 	}
