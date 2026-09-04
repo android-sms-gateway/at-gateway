@@ -291,18 +291,20 @@ func (s *Service) SignalUpdate(ctx context.Context) {
 	s.mu.Unlock()
 }
 
-// SendSMS sends one text-mode SMS through the active Commands handle,
-// mirroring SignalUpdate's identity-snapshot pattern: a nil Commands
-// (disconnected or still connecting) maps to ErrModemNotStarted. The ctx is
-// INERT per command (see Commands.SendSMS). This wrapper is the public send
-// entrypoint consumed by the messages worker.
-func (s *Service) SendSMS(ctx context.Context, phoneNumber, text string) (int, error) {
+// SendSMS sends a PDU-mode SMS through the active Commands handle, mirroring
+// SignalUpdate's identity-snapshot pattern: a nil Commands (disconnected or
+// still connecting) maps to ErrModemNotStarted. Long texts are sent as
+// concatenated multi-part messages; the returned slice carries one message
+// reference per accepted part. The ctx is INERT per command (see
+// Commands.SendSMS). This wrapper is the public send entrypoint consumed by
+// the messages worker.
+func (s *Service) SendSMS(ctx context.Context, phoneNumber, text string) ([]int, error) {
 	s.mu.RLock()
 	commands := s.commands
 	s.mu.RUnlock()
 
 	if commands == nil {
-		return 0, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
+		return nil, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
 	}
 
 	return commands.SendSMS(ctx, phoneNumber, text)
@@ -316,6 +318,10 @@ const cmtRedacted = "<redacted>"
 // trailing body line via WithTrailingLine) so they cannot leak into in-flight
 // command responses as info lines. It is LOG-ONLY: inbound SMS is discarded,
 // same as the legacy drain(); the SMS phase replaces this handler.
+//
+// In PDU mode (the mode this service inits) the head is "+CMT: <length>" - it
+// carries no SCTS (or sender) field, so the redaction always logs the fixed
+// <redacted> marker; the trailing body line is the hex PDU.
 //
 // Only the SCTS timestamp is logged, at DEBUG level - the full head line
 // carries the sender number and the body (info[1]) is PII. When the SCTS is

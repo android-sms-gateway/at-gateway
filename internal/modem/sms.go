@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/warthog618/modem/at"
+	"github.com/warthog618/sms"
+	"github.com/warthog618/sms/encoding/pdumode"
+	"github.com/warthog618/sms/encoding/tpdu"
 )
 
 // initCommand describes one row of the modem init sequence.
@@ -26,6 +29,12 @@ type Commands struct {
 	// metrics is REQUIRED (non-nil): exec() records CommandsTotal +
 	// CommandDuration for every library command (incl. drains).
 	metrics *Metrics
+
+	// encoder converts texts to SMS-SUBMIT TPDUs. The encoder is SHARED across
+	// SendSMS calls so its internal concatenation-reference and MR counters
+	// stay monotonic: back-to-back multi-part messages to the same phone must
+	// not reuse the same 8-bit concatenation reference.
+	encoder *sms.Encoder
 
 	// mu serializes barrier-check + drain + command execution. The library
 	// cmdCh serializes only the wire, not the barrier state.
@@ -45,6 +54,7 @@ func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 	return &Commands{
 		at:           at,
 		metrics:      metrics,
+		encoder:      sms.NewEncoder(sms.AsSubmit),
 		mu:           sync.Mutex{},
 		pendingDrain: false,
 		initialized:  false,
@@ -52,7 +62,9 @@ func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 }
 
 // Init runs the boot init sequence in exact order: AT, ATE0, +CMEE=1,
-// +CMGF=1, +CNMI=2,1,0,0,0 and the +CPIN? READY gate.
+// +CMGF=0, +CNMI=2,1,0,0,0 and the +CPIN? READY gate. The modem is left in
+// PDU mode (+CMGF=0): text mode cannot carry a user data header, so every
+// send - single- and multi-part alike - is a PDU exchange.
 //
 // The ctx parameter is INERT per command: the library has no context support,
 // so an in-flight command always runs to its own per-command timeout. ctx is
@@ -63,7 +75,7 @@ func (c *Commands) Init(ctx context.Context) error {
 		{cmd: "", display: "AT", tag: "test"},
 		{cmd: "E0", display: "ATE0", tag: "echo off"},
 		{cmd: "+CMEE=1", display: "AT+CMEE=1", tag: "verbose errors"},
-		{cmd: "+CMGF=1", display: "AT+CMGF=1", tag: "text mode"},
+		{cmd: "+CMGF=0", display: "AT+CMGF=0", tag: "PDU mode"},
 		{cmd: "+CNMI=2,1,0,0,0", display: "AT+CNMI=2,1,0,0,0", tag: "SMS routing"},
 		{cmd: "+CPIN?", display: "AT+CPIN?", tag: "SIM PIN"},
 	}
@@ -428,46 +440,106 @@ func (c *Commands) mapCommandError(cmd initCommand, err error) error {
 	}
 }
 
-// SendSMS sends one text-mode SMS via AT+CMGS using the library's two-step
-// SMS flow: the command line with the QUOTED phone number (3GPP TS 27.005
-// requires <da> in quotes: AT+CMGS="+79990001234"; SIM800L rejects the
-// unquoted form with +CMS ERROR; the library passes the command through
-// verbatim), then - after the ">" prompt - the payload terminated by Ctrl-Z
-// (the library appends the 0x1A terminator itself; no raw port fallback is
-// needed). It returns the message reference <mr> parsed from the +CMGS
-// response.
+// SendSMS sends a PDU-mode SMS via AT+CMGS using the library's two-step SMS
+// flow: the command line carrying the TPDU LENGTH in octets
+// (AT+CMGS=<length>; 3GPP TS 27.005 PDU mode), then - after the ">" prompt -
+// the hex-encoded PDU (SMSC + TPDU) terminated by Ctrl-Z (the library appends
+// the 0x1A terminator itself; no raw port fallback is needed).
 //
-// A phone containing a quote, CR or LF would corrupt the command line and is
-// rejected with ErrInvalidPhone before any modem traffic.
+// The text is encoded into SMS-SUBMIT TPDUs with the shared encoder (GSM-7
+// default alphabet; text outside it falls back to UCS-2). Text longer than a
+// single part is split into CONCATENATED parts carrying the 8-bit
+// concatenation UDH (IEI 0x00) so the receiving phone reassembles them; each
+// part is one AT+CMGS exchange. All parts are encoded BEFORE the first modem
+// traffic, so encoding failures (e.g. an empty text or a text exceeding the
+// 255-part protocol ceiling) reject the whole send without side effects. The
+// phone number never appears on the command line in PDU mode, so the
+// text-mode quote/CR/LF injection guard does not apply.
+//
+// It returns one message reference <mr> per part ACCEPTED by the modem. On a
+// mid-sequence failure (a part rejected after earlier parts were accepted)
+// the references of the accepted parts are returned together with an error
+// naming the failing part; a failure of the only part returns the bare mapped
+// error. Callers must treat a recipient as failed on any error - earlier
+// parts may already be in the network.
 //
 // Errors are mapped like the query path: a +CMS/+CME ERROR or generic ERROR
 // wraps ErrSendFailed (the +CMS/+CME code stays [errors.As]-able), a per-command
 // deadline wraps ErrModemTimeout and sets the lazy drain barrier (execSMS runs
 // through the same drain semantics as exec). The ctx is INERT per command (the
-// library has no context support): it is checked before the send only.
-//
-// SMSSentTotal is incremented ONLY when the +CMGS response yields a message
-// reference - a completed send, never a validation or queued message.
-func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) (int, error) {
+// library has no context support): it is checked before the encode and between
+// parts only.
+func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) ([]int, error) {
 	if err := ctx.Err(); err != nil {
-		return 0, fmt.Errorf("send SMS: %w", err)
+		return nil, fmt.Errorf("send SMS: %w", err)
 	}
 	if !c.initialized {
-		return 0, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
+		return nil, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
 	}
-	if strings.ContainsAny(phoneNumber, "\"\r\n") {
-		return 0, fmt.Errorf("send SMS: %w: phone %q must not contain quotes, CR or LF", ErrInvalidPhone, phoneNumber)
+
+	pdus, err := c.encoder.Encode([]byte(text), sms.To(phoneNumber))
+	if err != nil {
+		return nil, fmt.Errorf("send SMS: encode: %w", err)
+	}
+	if len(pdus) == 0 {
+		return nil, fmt.Errorf("send SMS: %w: text is empty", ErrInvalidText)
+	}
+	if len(pdus) > smsMaxParts {
+		return nil, fmt.Errorf(
+			"send SMS: %w: text is %d parts long, maximum is %d",
+			ErrInvalidText,
+			len(pdus),
+			smsMaxParts,
+		)
+	}
+
+	refs := make([]int, 0, len(pdus))
+	for i, p := range pdus {
+		select {
+		case <-ctx.Done():
+			return c.partialRefs(refs, i, len(pdus), ctx.Err())
+		default:
+		}
+
+		ref, sendErr := c.sendPDU(p)
+		if sendErr != nil {
+			return c.partialRefs(refs, i, len(pdus), sendErr)
+		}
+		refs = append(refs, ref)
+	}
+
+	return refs, nil
+}
+
+// sendPDU sends one already-encoded TPDU part and returns its message
+// reference parsed from the +CMGS response. Failures are returned bare; the
+// caller (partialRefs) adds the part context when the message has several
+// parts.
+func (c *Commands) sendPDU(p tpdu.TPDU) (int, error) {
+	tp, err := p.MarshalBinary()
+	if err != nil {
+		return 0, fmt.Errorf("marshal TPDU: %w", err)
+	}
+
+	// The PDU carries an empty SMSC address (the zero value marshals to a
+	// single 0x00 length octet): the modem fills in the SIM's service centre.
+	var pdu pdumode.PDU
+	pdu.TPDU = tp
+	hexPayload, err := pdu.MarshalHexString()
+	if err != nil {
+		return 0, fmt.Errorf("marshal PDU: %w", err)
 	}
 
 	cmd := initCommand{
-		cmd:     "+CMGS=\"" + phoneNumber + "\"",
-		display: "AT+CMGS=\"" + phoneNumber + "\"",
+		cmd:     "+CMGS=" + strconv.Itoa(len(tp)),
+		display: "AT+CMGS=" + strconv.Itoa(len(tp)),
 		tag:     "send SMS",
 	}
-	lines, err := c.execSMS(cmd, text)
+	lines, err := c.execSMS(cmd, hexPayload)
 	if err != nil {
 		return 0, err
 	}
+
 	// The +CMGS: indication head can leak into this response as an unknown
 	// info line (v0.4.0 indLoop forwards heads after handlers; with CNMI
 	// active a +CMT head may precede our +CMGS line). Match ONLY lines that
@@ -485,6 +557,18 @@ func (c *Commands) SendSMS(ctx context.Context, phoneNumber, text string) (int, 
 	}
 
 	return 0, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, errNoCMGSLine)
+}
+
+// partialRefs shapes a part failure: for a multi-part message the cause is
+// wrapped with the failing part index, and the references of the parts
+// accepted before the failure are returned alongside the error. A single-part
+// message keeps the bare cause and nil refs.
+func (c *Commands) partialRefs(refs []int, failing, total int, cause error) ([]int, error) {
+	if total == 1 {
+		return nil, cause
+	}
+
+	return refs, fmt.Errorf("part %d of %d: %w", failing+1, total, cause)
 }
 
 // execSMS runs one SMS send command through the lazy drain barrier, mirroring

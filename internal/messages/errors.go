@@ -9,10 +9,7 @@ var (
 	ErrAlreadyExists      = errors.New("message already exists")
 	ErrNotPending         = errors.New("message is not pending")
 	ErrDuplicateRecipient = errors.New("recipient already exists for this message")
-
-	// ErrNotSupported is returned when Enqueue receives a message type the
-	// MVP does not support (data messages).
-	ErrNotSupported = errors.New("data messages are not supported")
+	ErrNotSupported       = errors.New("feature not supported")
 
 	// ErrInvalidText is returned when the message text is missing or fails
 	// the modem ASCII validation.

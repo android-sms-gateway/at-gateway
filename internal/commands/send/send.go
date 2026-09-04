@@ -3,6 +3,8 @@ package send
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
@@ -34,7 +36,7 @@ func Command() *cli.Command {
 			&cli.StringFlag{
 				Name:     "text",
 				Aliases:  []string{"t"},
-				Usage:    "SMS text: printable 7-bit ASCII, newline, carriage return, max 160 characters",
+				Usage:    "SMS text: GSM-7 characters (Unicode falls back to UCS-2); longer texts are sent as concatenated multi-part SMS",
 				Required: true,
 			},
 			&cli.IntFlag{
@@ -42,6 +44,11 @@ func Command() *cli.Command {
 				Aliases: []string{"s"},
 				Usage:   "SIM slot (reserved: the single-SIM MVP ignores it)",
 				Value:   1,
+			},
+			&cli.IntFlag{
+				Name:  "max-parts",
+				Usage: "Maximum number of concatenated SMS parts (default: MESSAGES__MAX_SEGMENTS, 10)",
+				Value: 0,
 			},
 			&cli.DurationFlag{
 				Name:  "timeout",
@@ -54,21 +61,25 @@ func Command() *cli.Command {
 
 // run loads the config, validates the text, opens the modem port and sends
 // one SMS. Every failure prints a message and exits 1 via cli.Exit; a
-// successful send prints "sent ref=<mr>" and exits 0. Validation happens
-// BEFORE any config or modem wiring so an invalid text never touches the
-// modem.
+// successful send prints "sent ref=<mr>" (single part) or
+// "sent parts=<n> refs=<mr1>,<mr2>,..." and exits 0. Validation happens
+// BEFORE any modem wiring so an invalid text never touches the modem.
 func run(ctx context.Context, cmd *cli.Command) error {
 	phone := cmd.String("phone")
 	text := cmd.String("text")
 	sim := cmd.Int("sim")
 
-	if err := modem.ValidateASCII(text); err != nil {
-		return cli.Exit(err, 1)
-	}
-
 	cfg, err := config.New()
 	if err != nil {
 		return cli.Exit(fmt.Errorf("load config: %w", err), 1)
+	}
+
+	maxParts := cmd.Int("max-parts")
+	if maxParts <= 0 {
+		maxParts = cfg.Messages.MaxSegments
+	}
+	if validateErr := modem.ValidateText(text, maxParts); validateErr != nil {
+		return cli.Exit(validateErr, 1)
 	}
 
 	logger, err := zap.NewProduction()
@@ -109,12 +120,21 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		zap.Int("sim", sim),
 	)
 
-	ref, err := commands.SendSMS(ctx, phone, text)
+	refs, err := commands.SendSMS(ctx, phone, text)
 	if err != nil {
 		return cli.Exit(fmt.Errorf("send SMS: %w", err), 1)
 	}
 
-	_, _ = fmt.Fprintf(cmd.Root().Writer, "sent ref=%d\n", ref)
+	switch len(refs) {
+	case 1:
+		_, _ = fmt.Fprintf(cmd.Root().Writer, "sent ref=%d\n", refs[0])
+	default:
+		strs := make([]string, 0, len(refs))
+		for _, ref := range refs {
+			strs = append(strs, strconv.Itoa(ref))
+		}
+		_, _ = fmt.Fprintf(cmd.Root().Writer, "sent parts=%d refs=%s\n", len(refs), strings.Join(strs, ","))
+	}
 
 	return nil
 }

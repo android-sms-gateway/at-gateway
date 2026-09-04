@@ -64,6 +64,13 @@ type EnqueueOptions struct {
 // is the SOLE ext_id generator), resolves the device ID and persists the
 // message as Pending. The returned message carries the resolved device ID.
 func (s *Service) Enqueue(ctx context.Context, input MessageInput, opts EnqueueOptions) (*Message, error) {
+	if input.IsEncrypted {
+		return nil, fmt.Errorf("%w: encrypted messages are not supported", ErrNotSupported)
+	}
+	if input.SimNumber != nil && *input.SimNumber != 1 {
+		return nil, fmt.Errorf("%w: only SIM 1 is supported", ErrNotSupported)
+	}
+
 	// At least one non-empty phone number.
 	if len(input.PhoneNumbers) == 0 || slices.Contains(input.PhoneNumbers, "") {
 		return nil, ErrInvalidPhoneNumbers
@@ -203,7 +210,9 @@ func (s *Service) processRecipient(
 	}
 
 	if message.TextContent == nil {
-		return recipient.State, s.messages.SetRecipientFailed(
+		s.metrics.FailedTotal.Inc()
+
+		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
 			ctx,
 			message.ID,
 			recipient.PhoneNumber,
@@ -211,8 +220,14 @@ func (s *Service) processRecipient(
 		)
 	}
 
-	refID, err := s.modemSvc.SendSMS(ctx, recipient.PhoneNumber, message.TextContent.Text)
-	if err != nil {
+	// Preflight the part count BEFORE any modem traffic: the encode is
+	// deterministic and a text that cannot be sent within the configured cap
+	// must never burn modem commands. The check mirrors the send-path
+	// encoding (GSM-7 default alphabet, UCS-2 fallback), so a text passing
+	// here always fits the cap.
+	if err := modem.ValidateText(message.TextContent.Text, s.config.MaxSegments); err != nil {
+		s.metrics.FailedTotal.Inc()
+
 		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
 			ctx,
 			message.ID,
@@ -221,7 +236,28 @@ func (s *Service) processRecipient(
 		)
 	}
 
-	return smsgateway.ProcessingStateSent, s.messages.SetRecipientSent(ctx, message.ID, recipient.PhoneNumber, refID)
+	refs, err := s.modemSvc.SendSMS(ctx, recipient.PhoneNumber, message.TextContent.Text)
+	if err != nil {
+		s.metrics.FailedTotal.Inc()
+
+		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
+			ctx,
+			message.ID,
+			recipient.PhoneNumber,
+			err.Error(),
+		)
+	}
+
+	// ref_id stores the reference of the LAST accepted part: a recipient is
+	// Sent only when the whole multi-part sequence reached the modem.
+	s.metrics.SentTotal.Inc()
+
+	return smsgateway.ProcessingStateSent, s.messages.SetRecipientSent(
+		ctx,
+		message.ID,
+		recipient.PhoneNumber,
+		refs[len(refs)-1],
+	)
 }
 
 func (s *Service) resolveFinalState(states []smsgateway.ProcessingState) smsgateway.ProcessingState {
