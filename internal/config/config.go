@@ -45,12 +45,24 @@ type deviceConfig struct {
 	Name string `koanf:"name"`
 }
 
+type databaseConfig struct {
+	URL string `koanf:"url"`
+}
+
+type messagesConfig struct {
+	PollInterval  time.Duration `koanf:"poll_interval"`
+	MaxSegments   int           `koanf:"max_segments"`
+	DefaultRegion string        `koanf:"default_region"`
+}
+
 type Config struct {
-	HTTP    http          `koanf:"http"`
-	Modem   modemConfig   `koanf:"modem"`
-	Storage storageConfig `koanf:"storage"`
-	Auth    authConfig    `koanf:"auth"`
-	Device  deviceConfig  `koanf:"device"`
+	HTTP     http           `koanf:"http"`
+	Modem    modemConfig    `koanf:"modem"`
+	Storage  storageConfig  `koanf:"storage"`
+	Auth     authConfig     `koanf:"auth"`
+	Device   deviceConfig   `koanf:"device"`
+	Database databaseConfig `koanf:"database"`
+	Messages messagesConfig `koanf:"messages"`
 }
 
 func Default() Config {
@@ -70,7 +82,7 @@ func Default() Config {
 			Port:           "/dev/ttyUSB0",
 			BaudRate:       115200,
 			InitTimeout:    30 * time.Second,
-			CommandTimeout: 10 * time.Second,
+			CommandTimeout: 30 * time.Second,
 		},
 		Storage: storageConfig{
 			Path: "data/storage.json",
@@ -83,6 +95,14 @@ func Default() Config {
 		},
 		Device: deviceConfig{
 			Name: "",
+		},
+		Database: databaseConfig{
+			URL: "sqlite://data/gateway.db",
+		},
+		Messages: messagesConfig{
+			PollInterval:  time.Second,
+			MaxSegments:   10,
+			DefaultRegion: "RU",
 		},
 	}
 }

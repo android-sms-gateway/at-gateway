@@ -20,6 +20,12 @@ const effectiveCmdTimeoutFallback = 5 * time.Second
 // ticker in Run. Zero disables the ticker entirely.
 const signalRefreshDefaultInterval = 60 * time.Second
 
+// deliveryReportChannelSize bounds the buffered +CDS delivery-report queue
+// between the modem read loop and the messages worker. A full channel makes
+// handleCDS drop the report (logged): consumers must drain promptly or a
+// status report is lost and the recipient stays Sent.
+const deliveryReportChannelSize = 16
+
 type Service struct {
 	config Config
 
@@ -35,6 +41,13 @@ type Service struct {
 	// the signal telemetry via SignalUpdate. Zero disables the ticker; there
 	// is NO config/env key - tests set it in-package.
 	signalRefreshInterval time.Duration
+
+	// deliveryReports carries decoded +CDS SMS-STATUS-REPORTs from the
+	// modem read loop to consumers. The channel is created ONCE in
+	// NewService and survives reconnects: connect() registers a fresh URC
+	// handler per connection, but the handler always forwards to this
+	// stable channel.
+	deliveryReports chan DeliveryReport
 
 	// portFactory opens the serial port; defaulted to port.Open. Tests
 	// override it to inject scripted modems.
@@ -72,6 +85,7 @@ func NewService(config Config, loger *zap.Logger, metrics *Metrics) *Service {
 		portFactory: port.Open,
 
 		signalRefreshInterval: signalRefreshDefaultInterval,
+		deliveryReports:       make(chan DeliveryReport, deliveryReportChannelSize),
 
 		mu: sync.RWMutex{},
 
@@ -164,6 +178,7 @@ func (s *Service) connect(ctx context.Context) error {
 	at := at.New(port,
 		at.WithTimeout(cmdTimeout),
 		at.WithIndication("+CMT:", s.handleCMT, at.WithTrailingLine),
+		at.WithIndication("+CDS:", s.handleCDS, at.WithTrailingLine),
 	)
 
 	commands := NewCommands(at, s.metrics)
@@ -291,6 +306,35 @@ func (s *Service) SignalUpdate(ctx context.Context) {
 	s.mu.Unlock()
 }
 
+// SendSMS sends a PDU-mode SMS through the active Commands handle, mirroring
+// SignalUpdate's identity-snapshot pattern: a nil Commands (disconnected or
+// still connecting) maps to ErrModemNotStarted. Long texts are sent as
+// concatenated multi-part messages; the returned slice carries one message
+// reference per accepted part. withDeliveryReport requests a status report
+// from the SC for the last part (see Commands.SendSMS). The ctx is INERT per
+// command (see Commands.SendSMS). This wrapper is the public send entrypoint
+// consumed by the messages worker.
+func (s *Service) SendSMS(ctx context.Context, phoneNumber, text string, withDeliveryReport bool) ([]int, error) {
+	s.mu.RLock()
+	commands := s.commands
+	s.mu.RUnlock()
+
+	if commands == nil {
+		return nil, fmt.Errorf("send SMS: %w", ErrModemNotStarted)
+	}
+
+	return commands.SendSMS(ctx, phoneNumber, text, withDeliveryReport)
+}
+
+// DeliveryReports returns the channel carrying decoded +CDS
+// SMS-STATUS-REPORTs. The channel is stable across modem reconnects; a
+// consumer that is too slow loses reports (handleCDS drops on a full
+// channel). Subscribers should read from it until the context of their Run
+// loop is canceled.
+func (s *Service) DeliveryReports() <-chan DeliveryReport {
+	return s.deliveryReports
+}
+
 // cmtRedacted is the deterministic no-PII marker logged when a +CMT head line
 // carries no parseable SCTS timestamp.
 const cmtRedacted = "<redacted>"
@@ -299,6 +343,10 @@ const cmtRedacted = "<redacted>"
 // trailing body line via WithTrailingLine) so they cannot leak into in-flight
 // command responses as info lines. It is LOG-ONLY: inbound SMS is discarded,
 // same as the legacy drain(); the SMS phase replaces this handler.
+//
+// In PDU mode (the mode this service inits) the head is "+CMT: <length>" - it
+// carries no SCTS (or sender) field, so the redaction always logs the fixed
+// <redacted> marker; the trailing body line is the hex PDU.
 //
 // Only the SCTS timestamp is logged, at DEBUG level - the full head line
 // carries the sender number and the body (info[1]) is PII. When the SCTS is
@@ -319,10 +367,6 @@ func (s *Service) handleCMT(info []string) {
 	if len(info) == 0 {
 		return
 	}
-
-	// Counter-only inbound-SMS telemetry: messages remain discarded and the
-	// log stays DEBUG-redacted; no content/PII is captured.
-	s.metrics.SMSReceivedTotal.Inc()
 
 	s.logger.Debug("modem SMS received (ignored)", zap.String("scts", redactCMTHead(info[0])))
 }
@@ -347,4 +391,36 @@ func redactCMTHead(head string) string {
 	}
 
 	return scts
+}
+
+// handleCDS consumes "+CDS:" unsolicited notifications (SMS-STATUS-REPORTs,
+// enabled by +CNMI <ds>=1) - the head line plus ONE trailing PDU body line
+// via WithTrailingLine - so they cannot leak into in-flight command
+// responses as info lines. The head is "+CDS: <length>" (PDU mode, no PII);
+// the body is the hex PDU of the status report.
+//
+// Decoded reports are forwarded to the DeliveryReports channel with a
+// NON-BLOCKING send: the handler runs on its own goroutine (indLoop spawns
+// go ind.handler(n)) but must never stall the read loop. A full channel or a
+// malformed/undecodable body is dropped with a log entry - a dropped report
+// leaves the recipient in Sent state until the SC retries or the operator
+// intervenes. The body (info[1]) is the recipient phone number in encoded
+// form and is never logged.
+func (s *Service) handleCDS(info []string) {
+	if len(info) < 2 { //nolint:mnd // head + one body line
+		s.logger.Debug("delivery report dropped: incomplete +CDS indication")
+		return
+	}
+
+	report, err := DecodeDeliveryReport(info[1])
+	if err != nil {
+		s.logger.Debug("delivery report dropped: undecodable +CDS body", zap.Error(err))
+		return
+	}
+
+	select {
+	case s.deliveryReports <- report:
+	default:
+		s.logger.Warn("delivery report dropped: consumer channel full")
+	}
 }

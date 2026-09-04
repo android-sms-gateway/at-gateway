@@ -6,13 +6,18 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/auth"
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/db"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/server"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
+	"github.com/go-core-fx/bunfx"
 	"github.com/go-core-fx/fiberfx"
+	"github.com/go-core-fx/goosefx"
 	"github.com/go-core-fx/healthfx"
 	"github.com/go-core-fx/logger"
+	"github.com/go-core-fx/sqlfx"
 	"github.com/go-core-fx/validatorfx"
 	"github.com/urfave/cli/v3"
 	"go.uber.org/fx"
@@ -36,13 +41,13 @@ func run(ctx context.Context, version healthfx.Version) error {
 		logger.Module(),
 		logger.WithFxDefaultLogger(),
 		// badgerfx.Module(),
-		// bunfx.Module(),
+		bunfx.Module(),
 		// cachefx.Module(),
 		fiberfx.Module(),
 		// gocqlfx.Module(),
 		// gocqlxfx.Module(),
-		// sqlfx.Module(),
-		// goosefx.Module(),
+		sqlfx.Module(),
+		goosefx.Module(),
 		// gormfx.Module(),
 		healthfx.Module(),
 		// openrouterfx.Module(),
@@ -54,11 +59,13 @@ func run(ctx context.Context, version healthfx.Version) error {
 		//
 		// APP MODULES
 		config.Module(),
+		db.Module(),
 		server.Module(),
 		storage.Module(),
 		//
 		// BUSINESS MODULES
 		modem.Module(true),
+		messages.Module(true),
 		auth.Module(),
 		devices.Module(),
 		fx.Supply(version),
