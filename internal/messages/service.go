@@ -9,14 +9,12 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/client-go/smsgateway"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
 )
 
-// Service owns the message business rules: all validation, the ext_id
-// generation and the background FIFO send worker. It is the only layer that
-// talks to the modem; the repository trusts its inputs.
 type Service struct {
 	config   Config
 	messages *Repository
@@ -150,152 +148,78 @@ func (s *Service) processPending(ctx context.Context) bool {
 
 	s.logger.Debug("processing pending message", zap.String("ext_id", message.ID))
 
+	states := make([]smsgateway.ProcessingState, 0, len(message.Recipients))
+	for _, recipient := range message.Recipients {
+		state, recipientErr := s.processRecipient(ctx, message, recipient)
+		if recipientErr != nil {
+			s.logger.Error("process recipient", zap.Error(recipientErr))
+			return false
+		}
+		states = append(states, state)
+	}
+
+	finalState := s.resolveFinalState(states)
+	s.logger.Debug("final state", zap.String("ext_id", message.ID), zap.String("state", string(finalState)))
+
+	if stateErr := s.messages.SetState(ctx, message.ID, finalState); stateErr != nil {
+		s.logger.Error("set state", zap.Error(stateErr))
+		return false
+	}
+
 	return true
 }
 
-// poll := s.config.PollInterval
-// if poll <= 0 {
-// 	poll = time.Second
-// }
+func (s *Service) processRecipient(
+	ctx context.Context,
+	message *Message,
+	recipient Recipient,
+) (smsgateway.ProcessingState, error) {
+	if !recipient.processable() {
+		return recipient.State, nil
+	}
 
-// for ctx.Err() == nil {
-// 	message, err := s.messages.GetNextPending(ctx)
-// 	if err != nil {
-// 		if !errors.Is(err, ErrNotFound) {
-// 			s.logger.Error("get next pending message", zap.Error(err))
-// 		}
-// 		if !s.sleepOrDone(ctx, poll) {
-// 			return nil
-// 		}
-// 		continue
-// 	}
+	if err := s.messages.SetRecipientProcessed(ctx, message.ID, recipient.PhoneNumber); err != nil {
+		return smsgateway.ProcessingStateFailed, err
+	}
 
-// 	if message.TextContent == nil {
-// 		// Data messages are not supported (MVP).
-// 		continue
-// 	}
+	if message.TextContent == nil {
+		return recipient.State, s.messages.SetRecipientFailed(
+			ctx,
+			message.ID,
+			recipient.PhoneNumber,
+			"only text messages are supported",
+		)
+	}
 
-// 	// Pre-send Pending re-check: the message may have left Pending (e.g.
-// 	// cancelled) between GetNextPending and here.
-// 	current, err := s.messages.GetByID(ctx, message.ID)
-// 	if err != nil || current.State != smsgateway.ProcessingStatePending {
-// 		continue
-// 	}
+	refID, err := s.modemSvc.SendSMS(ctx, recipient.PhoneNumber, message.TextContent.Text)
+	if err != nil {
+		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
+			ctx,
+			message.ID,
+			recipient.PhoneNumber,
+			err.Error(),
+		)
+	}
 
-// 	currentState := message.State
-// 	states := make([]smsgateway.ProcessingState, len(message.Recipients))
-// 	for i := range states {
-// 		states[i] = smsgateway.ProcessingStatePending
-// 	}
-// 	for i, recipient := range message.Recipients {
-// 		states[i] = s.sendRecipient(ctx, message, recipient)
+	return smsgateway.ProcessingStateSent, s.messages.SetRecipientSent(ctx, message.ID, recipient.PhoneNumber, refID)
+}
 
-// 		var shouldBreak bool
-// 		currentState, shouldBreak = s.advanceMessageState(ctx, message, deriveMessageState(states), currentState)
-// 		if shouldBreak {
-// 			break
-// 		}
-// 	}
-// }
+func (s *Service) resolveFinalState(states []smsgateway.ProcessingState) smsgateway.ProcessingState {
+	finalState := smsgateway.ProcessingStateSent
 
-// return nil
+	switch {
+	case slices.Contains(states, smsgateway.ProcessingStatePending):
+		finalState = smsgateway.ProcessingStatePending
+	case slices.Contains(states, smsgateway.ProcessingStateCancelled):
+		finalState = smsgateway.ProcessingStateCancelled
+	case slices.Contains(states, smsgateway.ProcessingStateProcessed):
+		finalState = smsgateway.ProcessingStateProcessed
 
-// // sendRecipient dispatches a single SMS through the modem and persists the
-// // per-recipient outcome (Sent or Failed). It returns the resulting recipient
-// // processing state.
-// func (s *Service) sendRecipient(ctx context.Context, message *Message, recipient Recipient) smsgateway.ProcessingState {
-// 	refID, sendErr := s.modemSvc.SendSMS(ctx, recipient.PhoneNumber, message.TextContent.Text)
-// 	if sendErr != nil {
-// 		errStr := sendErr.Error()
-// 		if updateErr := s.messages.UpdateRecipientState(
-// 			ctx, message.ID, recipient.PhoneNumber, smsgateway.ProcessingStateFailed, nil, &errStr,
-// 		); updateErr != nil {
-// 			s.logger.Error("update recipient state", zap.Error(updateErr))
-// 		}
-// 		if s.metrics != nil {
-// 			s.metrics.FailedTotal.Inc()
-// 		}
+	case lo.Count(states, smsgateway.ProcessingStateFailed) == len(states):
+		finalState = smsgateway.ProcessingStateFailed
+	case lo.Count(states, smsgateway.ProcessingStateDelivered) == len(states):
+		finalState = smsgateway.ProcessingStateDelivered
+	}
 
-// 		return smsgateway.ProcessingStateFailed
-// 	}
-
-// 	if setErr := s.messages.SetRecipientRef(ctx, message.ID, recipient.PhoneNumber, refID); setErr != nil {
-// 		s.logger.Error("set recipient ref", zap.Error(setErr))
-// 	}
-// 	if updateErr := s.messages.UpdateRecipientState(
-// 		ctx, message.ID, recipient.PhoneNumber, smsgateway.ProcessingStateSent, &refID, nil,
-// 	); updateErr != nil {
-// 		s.logger.Error("update recipient state", zap.Error(updateErr))
-// 	}
-// 	if s.metrics != nil {
-// 		s.metrics.SentTotal.Inc()
-// 	}
-
-// 	return smsgateway.ProcessingStateSent
-// }
-
-// // advanceMessageState derives the next message state from the recipient states
-// // array and, when it differs from currentState, persists it via an atomic
-// // append. It returns the (possibly unchanged) currentState and a shouldBreak
-// // flag: true when the recipient loop must stop (message left Pending or append
-// // failed).
-// func (s *Service) advanceMessageState(
-// 	ctx context.Context,
-// 	message *Message,
-// 	derived smsgateway.ProcessingState,
-// 	currentState smsgateway.ProcessingState,
-// ) (smsgateway.ProcessingState, bool) {
-// 	if derived == currentState {
-// 		return currentState, false
-// 	}
-
-// 	// Cancel-race guard: only a message that is still Pending may move
-// 	// forward; a mid-send Cancel or terminal Failed state stops the run
-// 	// for the remaining recipients.
-// 	latest, stateErr := s.messages.GetByID(ctx, message.ID)
-// 	if stateErr != nil || latest.State != smsgateway.ProcessingStatePending {
-// 		return currentState, true
-// 	}
-
-// 	if appendErr := s.messages.AppendMessageState(ctx, message.ID, derived); appendErr != nil {
-// 		s.logger.Error("append message state", zap.Error(appendErr))
-
-// 		return currentState, true
-// 	}
-
-// 	return derived, false
-// }
-
-// // sleepOrDone blocks for d or until ctx is done. It returns true when the
-// // timer fired (caller should continue), false when ctx was done (caller
-// // should return).
-// func (s *Service) sleepOrDone(ctx context.Context, d time.Duration) bool {
-// 	timer := time.NewTimer(d)
-// 	defer timer.Stop()
-
-// 	select {
-// 	case <-ctx.Done():
-// 		return false
-// 	case <-timer.C:
-// 		return true
-// 	}
-// }
-
-// // deriveMessageState aggregates the current recipient states onto the message
-// // state following the android ladder: any Pending -> Pending, any Cancelled
-// // -> Cancelled, all Failed -> Failed, else -> Sent.
-// func deriveMessageState(recipientStates []smsgateway.ProcessingState) smsgateway.ProcessingState {
-// 	if slices.Contains(recipientStates, smsgateway.ProcessingStatePending) {
-// 		return smsgateway.ProcessingStatePending
-// 	}
-// 	if slices.Contains(recipientStates, smsgateway.ProcessingStateCancelled) {
-// 		return smsgateway.ProcessingStateCancelled
-// 	}
-// 	for _, state := range recipientStates {
-// 		if state != smsgateway.ProcessingStateFailed {
-// 			return smsgateway.ProcessingStateSent
-// 		}
-// 	}
-
-// 	return smsgateway.ProcessingStateFailed
-// }
+	return finalState
+}

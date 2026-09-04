@@ -105,6 +105,21 @@ type Recipient struct {
 	Error       *string
 }
 
+func (r Recipient) processable() bool {
+	switch r.State {
+	case smsgateway.ProcessingStatePending, smsgateway.ProcessingStateProcessed:
+		return true
+	case smsgateway.ProcessingStateCancelling,
+		smsgateway.ProcessingStateCancelled,
+		smsgateway.ProcessingStateSent,
+		smsgateway.ProcessingStateDelivered,
+		smsgateway.ProcessingStateFailed:
+		return false
+	default:
+		panic("unreachable")
+	}
+}
+
 // StateChange is one ordered state-history entry; used for both message and
 // recipient histories.
 type StateChange struct {

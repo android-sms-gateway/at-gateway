@@ -13,8 +13,9 @@ import (
 func messageInputFromDTO(req *smsgateway.Message) *messages.MessageInput {
 	return &messages.MessageInput{
 		MessageContent: messages.MessageContent{
-			TextContent: req.TextMessage,
-			DataContent: req.DataMessage,
+			TextContent:       req.TextMessage,
+			DataContent:       req.DataMessage,
+			MultimediaContent: req.MmsMessage,
 		},
 		MessageOptions: messages.MessageOptions{
 			SimNumber:          req.SimNumber,
@@ -48,6 +49,7 @@ func messageToState(m *messages.Message) smsgateway.MessageState {
 		States:        m.States,
 		TextMessage:   m.TextContent,
 		DataMessage:   m.DataContent,
+		MmsMessage:    m.MultimediaContent,
 		HashedMessage: m.HashedContent,
 	}
 }

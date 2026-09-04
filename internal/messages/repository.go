@@ -140,27 +140,115 @@ func (r *Repository) Cancel(ctx context.Context, id string) (*Message, error) {
 	return message, nil
 }
 
+func (r *Repository) SetState(ctx context.Context, id string, state smsgateway.ProcessingState) error {
+	now := time.Now().UTC()
+	entry := stateModel{State: state, At: now}
+
+	_, err := r.db.NewUpdate().
+		Model((*messageModel)(nil)).
+		Set("state = ?", state).
+		Set("updated_at = ?", now).
+		Set(statesAppendExpr, entry).
+		Where("ext_id = ?", id).
+		Where("state <> ?", state).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("update state: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) SetRecipientProcessed(ctx context.Context, messageID, phoneNumber string) error {
+	return r.updateRecipientState(
+		ctx,
+		messageID,
+		phoneNumber,
+		smsgateway.ProcessingStateProcessed,
+		func(uq *bun.UpdateQuery) *bun.UpdateQuery {
+			return uq.Where("state in (?)", bun.List([]string{string(smsgateway.ProcessingStatePending)}))
+		},
+	)
+}
+
+func (r *Repository) SetRecipientSent(ctx context.Context, messageID, phoneNumber string, refID int) error {
+	return r.updateRecipientState(
+		ctx,
+		messageID,
+		phoneNumber,
+		smsgateway.ProcessingStateSent,
+		func(uq *bun.UpdateQuery) *bun.UpdateQuery {
+			return uq.Set("ref_id = ?", refID)
+		},
+	)
+}
+
+func (r *Repository) SetRecipientFailed(ctx context.Context, messageID, phoneNumber, reason string) error {
+	return r.updateRecipientState(
+		ctx,
+		messageID,
+		phoneNumber,
+		smsgateway.ProcessingStateFailed,
+		func(uq *bun.UpdateQuery) *bun.UpdateQuery {
+			return uq.Set("error = ?", reason)
+		},
+	)
+}
+
+func (r *Repository) updateRecipientState(
+	ctx context.Context,
+	messageID, phone string,
+	state smsgateway.ProcessingState,
+	additional func(*bun.UpdateQuery) *bun.UpdateQuery,
+) error {
+	now := time.Now().UTC()
+	entry := stateModel{State: state, At: now}
+
+	query := r.db.NewUpdate().
+		Model((*recipientModel)(nil)).
+		Set("state = ?", string(state)).
+		Set("updated_at = ?", now).
+		Set(statesAppendExpr, entry).
+		Where("state <> ?", state).
+		Where("message_id = ?", r.db.NewSelect().Model((*messageModel)(nil)).Column("id").Where("ext_id = ?", messageID)).
+		Where("phone = ?", phone)
+
+	if additional != nil {
+		query = additional(query)
+	}
+
+	_, err := query.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("set recipient processed: %w", err)
+	}
+
+	return nil
+}
+
 func (r *Repository) updateState(
 	ctx context.Context,
 	id string,
 	state smsgateway.ProcessingState,
 	where func(*bun.UpdateQuery) *bun.UpdateQuery,
 ) error {
+	now := time.Now().UTC()
+	entry := stateModel{State: state, At: now}
+
 	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		query := tx.NewUpdate().
 			Model((*messageModel)(nil)).
 			Set("state = ?", string(state)).
-			Set("updated_at = ?", time.Now().UTC()).
-			Set(statesAppendExpr, string(state)).
+			Set("updated_at = ?", now).
+			Set(statesAppendExpr, entry).
 			Where("ext_id = ?", id).
 			Where("state not in (?)", bun.List([]string{string(smsgateway.ProcessingStateFailed), string(state)}))
 		if where != nil {
 			query = where(query)
 		}
 
-		upd, err := query.Returning("id").Exec(ctx)
-		if err != nil {
-			return fmt.Errorf("update message state: %w", err)
+		upd, queryErr := query.Returning("id").Exec(ctx)
+		if queryErr != nil {
+			return fmt.Errorf("update message state: %w", queryErr)
 		}
 		rows, rowsErr := upd.RowsAffected()
 		if rowsErr != nil {
@@ -170,16 +258,16 @@ func (r *Repository) updateState(
 			return nil
 		}
 
-		_, err = tx.NewUpdate().
+		_, queryErr = tx.NewUpdate().
 			Model((*recipientModel)(nil)).
 			Set("state = ?", string(state)).
-			Set("updated_at = ?", time.Now().UTC()).
-			Set(statesAppendExpr, string(state)).
+			Set("updated_at = ?", now).
+			Set(statesAppendExpr, entry).
 			Where("state not in (?)", bun.List([]string{string(smsgateway.ProcessingStateFailed), string(state)})).
 			Where("message_id = ?", id).
 			Exec(ctx)
-		if err != nil {
-			return fmt.Errorf("update recipient state: %w", err)
+		if queryErr != nil {
+			return fmt.Errorf("update recipient state: %w", queryErr)
 		}
 
 		return nil

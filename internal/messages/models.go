@@ -21,6 +21,10 @@ type stateModel struct {
 	At    time.Time                  `json:"at"`
 }
 
+func (s stateModel) String() string {
+	return string(lo.Must(json.Marshal(s)))
+}
+
 type statesModel []stateModel
 
 // toDomainMap collapses the ordered state history onto the domain map; the
@@ -115,8 +119,9 @@ func (m *messageModel) messageContent() (MessageStateContent, error) {
 	if m.IsHashed {
 		return MessageStateContent{
 			MessageContent: MessageContent{
-				TextContent: nil,
-				DataContent: nil,
+				TextContent:       nil,
+				DataContent:       nil,
+				MultimediaContent: nil,
 			},
 			HashedContent: &smsgateway.HashedMessage{Hash: m.Content},
 		}, nil
@@ -131,8 +136,9 @@ func (m *messageModel) messageContent() (MessageStateContent, error) {
 
 		return MessageStateContent{
 			MessageContent: MessageContent{
-				TextContent: text,
-				DataContent: nil,
+				TextContent:       text,
+				DataContent:       nil,
+				MultimediaContent: nil,
 			},
 			HashedContent: nil,
 		}, nil
@@ -144,8 +150,9 @@ func (m *messageModel) messageContent() (MessageStateContent, error) {
 
 		return MessageStateContent{
 			MessageContent: MessageContent{
-				TextContent: nil,
-				DataContent: data,
+				TextContent:       nil,
+				DataContent:       data,
+				MultimediaContent: nil,
 			},
 			HashedContent: nil,
 		}, nil
