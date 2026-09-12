@@ -48,3 +48,79 @@ Authorization: Basic sms:{{basicPassword}}
 ###
 DELETE {{baseURL}}/api/v1/devices/{{deviceID}} HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
+
+# ============================================================
+# 4. MESSAGES
+# ============================================================
+
+###
+# Enqueue -> 202 Accepted + Location header + body id = generated ext_id
+# (nanoid; body may carry an explicit id, which is preserved)
+# @name postMessage
+POST {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"#️⃣ Привет из at-gateway"}}
+
+###
+# Enqueue with skipPhoneValidation=true -> 202; phone numbers stored verbatim
+# without E.164 validation/normalization
+# @name postMessageSkipValidation
+POST {{baseURL}}/api/v1/messages?skipPhoneValidation=true HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"phoneNumbers":["{{recipientPhone}}"],"textMessage":{"text":"Hello from at-gateway"}}
+
+###
+@messageID={{postMessage.response.body.$.id}}
+
+###
+# Poll message state by id; expect Pending -> Sent once the worker sends it
+GET {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+
+# --- Get by id ---
+
+###
+# Unknown id -> 404
+GET {{baseURL}}/api/v1/messages/does-not-exist HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+
+# --- List ---
+
+###
+# List messages; array of MessageState wire objects, total count in X-Total-Count
+GET {{baseURL}}/api/v1/messages?limit=10 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Filter by state
+GET {{baseURL}}/api/v1/messages?state=Sent HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Sort ascending by created_at (default is -created_at)
+GET {{baseURL}}/api/v1/messages?sort=created_at HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+
+# --- Cancel (DELETE) ---
+
+###
+# Cancel a Pending message -> 200 + state Cancelled; if the worker already
+# sent it the DELETE answers 400 (message is not pending)
+DELETE {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+# ============================================================
+# 5. AUTH
+# ============================================================
+
+###
+# 401 Unauthorized
+GET {{baseURL}}/api/v1/messages HTTP/1.1
+Authorization: Basic sms:invalid

@@ -316,14 +316,14 @@ const docTemplate = `{
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "Start date in RFC3339 format",
+                        "description": "Start date in RFC3339 format (ignored in MVP)",
                         "name": "from",
                         "in": "query"
                     },
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "End date in RFC3339 format",
+                        "description": "End date in RFC3339 format (ignored in MVP)",
                         "name": "to",
                         "in": "query"
                     },
@@ -346,7 +346,7 @@ const docTemplate = `{
                         "maxLength": 21,
                         "minLength": 21,
                         "type": "string",
-                        "description": "Filter by device ID",
+                        "description": "Filter by device ID (ignored in MVP)",
                         "name": "deviceId",
                         "in": "query"
                     },
@@ -369,7 +369,7 @@ const docTemplate = `{
                     {
                         "type": "boolean",
                         "default": false,
-                        "description": "Include textMessage/dataMessage content for each message. Default is false",
+                        "description": "Include textMessage/dataMessage content for each message (ignored in MVP)",
                         "name": "includeContent",
                         "in": "query"
                     },
@@ -413,12 +413,6 @@ const docTemplate = `{
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
                     },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/smsgateway.ErrorResponse"
-                        }
-                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -445,14 +439,6 @@ const docTemplate = `{
                         "type": "boolean",
                         "description": "Skip phone validation",
                         "name": "skipPhoneValidation",
-                        "in": "query"
-                    },
-                    {
-                        "minimum": 0,
-                        "type": "integer",
-                        "default": 0,
-                        "description": "Filter devices active within the specified number of hours",
-                        "name": "deviceActiveWithin",
                         "in": "query"
                     },
                     {
@@ -497,19 +483,13 @@ const docTemplate = `{
                         }
                     },
                     "409": {
-                        "description": "Message with such ID already exists",
+                        "description": "Message with the same ID already exists",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Internal server error",
-                        "schema": {
-                            "$ref": "#/definitions/smsgateway.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Queue limits exceeded; ensure device is online",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
@@ -558,6 +538,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/smsgateway.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Message not found",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
@@ -1116,6 +1102,14 @@ const docTemplate = `{
                     "type": "boolean",
                     "example": false
                 },
+                "mmsMessage": {
+                    "description": "Present only when ` + "`" + `includeContent=true` + "`" + ` and the message type is mms.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.MmsMessage"
+                        }
+                    ]
+                },
                 "recipients": {
                     "description": "Recipients states",
                     "type": "array",
@@ -1190,7 +1184,7 @@ const docTemplate = `{
                     "example": "2024-01-01T00:00:00Z"
                 },
                 "triggerWebhooks": {
-                    "description": "Indicates whether to trigger webhooks for the refreshed messages.",
+                    "description": "Deprecated: use WebhookDelivery instead. Indicates whether to trigger webhooks for the refreshed messages.",
                     "type": "boolean",
                     "example": true
                 },
@@ -1199,6 +1193,20 @@ const docTemplate = `{
                     "type": "string",
                     "format": "date-time",
                     "example": "2024-01-01T23:59:59Z"
+                },
+                "webhookDelivery": {
+                    "description": "Delivery mode for webhooks (overrides triggerWebhooks when set).",
+                    "enum": [
+                        "Disabled",
+                        "Individual",
+                        "Batch"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.WebhookDelivery"
+                        }
+                    ],
+                    "example": "Batch"
                 }
             }
         },
@@ -1335,11 +1343,20 @@ const docTemplate = `{
                     "maxLength": 65535,
                     "example": "Hello World!"
                 },
+                "mmsMessage": {
+                    "description": "MMS message",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.MmsMessage"
+                        }
+                    ]
+                },
                 "phoneNumbers": {
                     "description": "Recipients (phone numbers)",
                     "type": "array",
                     "maxItems": 100,
                     "minItems": 1,
+                    "uniqueItems": true,
                     "items": {
                         "type": "string"
                     },
@@ -1471,6 +1488,14 @@ const docTemplate = `{
                     "type": "boolean",
                     "example": false
                 },
+                "mmsMessage": {
+                    "description": "Present only when ` + "`" + `includeContent=true` + "`" + ` and the message type is mms.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/smsgateway.MmsMessage"
+                        }
+                    ]
+                },
                 "recipients": {
                     "description": "Recipients states",
                     "type": "array",
@@ -1515,6 +1540,52 @@ const docTemplate = `{
                 "LIFO",
                 "FIFO"
             ]
+        },
+        "smsgateway.MmsAttachment": {
+            "type": "object",
+            "required": [
+                "contentType",
+                "data"
+            ],
+            "properties": {
+                "contentType": {
+                    "description": "ContentType is the MIME type of the attachment.",
+                    "type": "string",
+                    "example": "image/png"
+                },
+                "data": {
+                    "description": "Data is the base64-encoded attachment content.",
+                    "type": "string",
+                    "example": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                },
+                "name": {
+                    "description": "Name is the optional file name of the attachment.",
+                    "type": "string",
+                    "example": "picture.png"
+                }
+            }
+        },
+        "smsgateway.MmsMessage": {
+            "type": "object",
+            "properties": {
+                "attachments": {
+                    "description": "Attachments is the list of attachments. Omitted when empty.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/smsgateway.MmsAttachment"
+                    }
+                },
+                "subject": {
+                    "description": "Subject is the optional subject of the MMS.",
+                    "type": "string",
+                    "example": "Hello"
+                },
+                "text": {
+                    "description": "Text is the optional text body of the MMS.",
+                    "type": "string",
+                    "example": "World"
+                }
+            }
         },
         "smsgateway.ProcessingState": {
             "type": "string",
@@ -1827,6 +1898,29 @@ const docTemplate = `{
                 }
             }
         },
+        "smsgateway.WebhookDelivery": {
+            "type": "string",
+            "enum": [
+                "Disabled",
+                "Individual",
+                "Batch"
+            ],
+            "x-enum-comments": {
+                "WebhookDeliveryBatch": "Deliver webhooks as ordered batches.",
+                "WebhookDeliveryDisabled": "Disable webhook delivery.",
+                "WebhookDeliveryIndividual": "Deliver webhooks individually (one per message)."
+            },
+            "x-enum-descriptions": [
+                "Disable webhook delivery.",
+                "Deliver webhooks individually (one per message).",
+                "Deliver webhooks as ordered batches."
+            ],
+            "x-enum-varnames": [
+                "WebhookDeliveryDisabled",
+                "WebhookDeliveryIndividual",
+                "WebhookDeliveryBatch"
+            ]
+        },
         "smsgateway.WebhookEvent": {
             "type": "string",
             "enum": [
@@ -1839,12 +1933,20 @@ const docTemplate = `{
                 "system:ping",
                 "mms:received",
                 "mms:downloaded",
-                "app:started"
+                "app:started",
+                "sms:batch:received",
+                "sms:batch:data-received",
+                "mms:batch:received",
+                "mms:batch:downloaded"
             ],
             "x-enum-comments": {
                 "WebhookEventAppStarted": "Triggered when the application is started.",
+                "WebhookEventMmsBatchDownloaded": "Triggered when a batch of MMS messages is downloaded.",
+                "WebhookEventMmsBatchReceived": "Triggered when a batch of MMS messages is received.",
                 "WebhookEventMmsDownloaded": "Triggered when an MMS is downloaded.",
                 "WebhookEventMmsReceived": "Triggered when an MMS is received.",
+                "WebhookEventSmsBatchDataReceived": "Triggered when a batch of data SMS messages is received.",
+                "WebhookEventSmsBatchReceived": "Triggered when a batch of SMS messages is received.",
                 "WebhookEventSmsCancelled": "Triggered when an SMS is cancelled.",
                 "WebhookEventSmsDataReceived": "Triggered when a data SMS is received.",
                 "WebhookEventSmsDelivered": "Triggered when an SMS is delivered.",
@@ -1863,7 +1965,11 @@ const docTemplate = `{
                 "Triggered when the device pings the server.",
                 "Triggered when an MMS is received.",
                 "Triggered when an MMS is downloaded.",
-                "Triggered when the application is started."
+                "Triggered when the application is started.",
+                "Triggered when a batch of SMS messages is received.",
+                "Triggered when a batch of data SMS messages is received.",
+                "Triggered when a batch of MMS messages is received.",
+                "Triggered when a batch of MMS messages is downloaded."
             ],
             "x-enum-varnames": [
                 "WebhookEventSmsReceived",
@@ -1875,7 +1981,11 @@ const docTemplate = `{
                 "WebhookEventSystemPing",
                 "WebhookEventMmsReceived",
                 "WebhookEventMmsDownloaded",
-                "WebhookEventAppStarted"
+                "WebhookEventAppStarted",
+                "WebhookEventSmsBatchReceived",
+                "WebhookEventSmsBatchDataReceived",
+                "WebhookEventMmsBatchReceived",
+                "WebhookEventMmsBatchDownloaded"
             ]
         }
     }
