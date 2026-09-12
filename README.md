@@ -1,264 +1,123 @@
-<a id="readme-top"></a>
+# 📱 AT Gateway
 
-<!-- PROJECT SHIELDS -->
 [![Contributors][contributors-shield]][contributors-url]
 [![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
+[![Stars][stars-shield]][stars-url]
 [![Issues][issues-shield]][issues-url]
-[![Apache License][license-shield]][license-url]
-[![Go][go-shield]][go-url]
+[![License][license-shield]][license-url]
 
-<!-- PROJECT LOGO -->
-<br />
-<div align="center">
-  <a href="https://github.com/capcom6/go-project-template">
-    <img src="https://raw.githubusercontent.com/golang-samples/gopher-vector/master/gopher.png" alt="Logo" width="120" height="120">
-  </a>
+A daemon that turns a serial AT-command modem (SIM800L class and similar) into an SMS gateway device with an HTTP API, health checks, and Prometheus telemetry. Part of the [SMSGate](https://sms-gate.app) ecosystem.
 
-<h3 align="center">go-project-template</h3>
+## 📖 About
 
-  <p align="center">
-    Opinionated Go service template with Fiber API, OpenAPI docs, Telegram bot wiring, health endpoints, and Fx-based modular DI.
-    <br />
-    <a href="https://github.com/capcom6/go-project-template"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="https://github.com/capcom6/go-project-template/issues">Report Bug</a>
-    ·
-    <a href="https://github.com/capcom6/go-project-template/issues">Request Feature</a>
-  </p>
-</div>
+The AT Gateway manages the full lifecycle of an AT-command modem connected over a serial port: it runs the boot init sequence, gates on SIM readiness, tracks connection state and signal quality, and exposes the device over a small HTTP API.
 
+## 📚 Table of Contents
 
+- [📱 AT Gateway](#-at-gateway)
+  - [📖 About](#-about)
+  - [📚 Table of Contents](#-table-of-contents)
+  - [⭐ Features](#-features)
+  - [📦 Prerequisites](#-prerequisites)
+  - [🚀 Getting Started](#-getting-started)
+  - [⚙️ Configuration](#️-configuration)
+  - [📦 Deployment](#-deployment)
+  - [🔌 API Overview](#-api-overview)
+  - [📚 Documentation](#-documentation)
+  - [🤝 Contributing](#-contributing)
+  - [📄 License](#-license)
 
-<!-- TABLE OF CONTENTS -->
-- [About The Project](#about-the-project)
-  - [Built With](#built-with)
-- [Getting Started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-- [Usage](#usage)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
-- [Acknowledgments](#acknowledgments)
+## ⭐ Features
 
+- AT-command modem bring-up: `AT`, `ATE0`, `+CMEE=1`, `+CMGF=1`, `+CNMI=2,1,0,0,0`, `+CPIN?` READY gate
+- Modem state machine with reconnect handling and per-command timeouts
+- Signal quality polling and Prometheus metrics (`/metrics`)
+- Automatic device registration with persisted local storage
+- Unified HTTP API with HTTP Basic auth and Swagger/OpenAPI docs
+- Health endpoints via go-core-fx (`/health`, `/health/live`, `/health/ready`)
 
+## 📦 Prerequisites
 
-<!-- ABOUT THE PROJECT -->
-## About The Project
+- Go 1.25+ for building from source
+- A serial AT-command modem (e.g. SIM800L) exposed as a serial device
+- Serial device permissions for the modem port user
 
-This repository is a production-oriented starter for backend services in Go. It ships with:
+## 🚀 Getting Started
 
-* HTTP server bootstrapped with Fiber and dependency injection via Uber Fx.
-* Version + health endpoints using `healthfx`.
-* Swagger/OpenAPI docs endpoint under `/api/v1/docs`.
-* Telegram bot integration (`/start` command handler included).
-* Modular business domain example with CLI commands (serve, one-shot tasks).
-
-Use this template when you want a fast path to shipping APIs and bot workflows with a clean module layout.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-### Built With
-
-* [![Go][go-shield]][go-url]
-* [![Fiber][fiber-shield]][fiber-url]
-* [![Fx][fx-shield]][fx-url]
-* [![CLI][cli-shield]][cli-url]
-* [![Swagger][swagger-shield]][swagger-url]
-* [![Telegram][telegram-shield]][telegram-url]
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- GETTING STARTED -->
-## Getting Started
-
-Follow these steps to run the service locally.
-
-### Prerequisites
-
-* Go 1.25+
-  ```sh
-  go version
-  ```
-* `golangci-lint` (optional but recommended)
-  ```sh
-  golangci-lint version
-  ```
-* `swag` CLI for docs generation
-  ```sh
-  go install github.com/swaggo/swag/cmd/swag@latest
-  ```
-
-### Installation
-
-1. Clone the repo.
-   ```sh
-   git clone https://github.com/capcom6/go-project-template.git
-   cd go-project-template
-   ```
-2. Download dependencies.
-   ```sh
-   make deps
-   ```
-3. (Optional) Generate OpenAPI docs.
-   ```sh
-   make gen
-   ```
-4. Build the binary.
-   ```sh
-   make build
-   ```
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- USAGE EXAMPLES -->
-## Usage
-
-Run the server (default command):
-
-```sh
-go run .
+```bash
+make deps
+make build
+AUTH__BASIC__PASSWORD=change-me ./bin/at-gateway
 ```
 
-Or with live reload:
+The default command is `serve`; the HTTP API listens on `127.0.0.1:3000`.
 
-```sh
-make air
+## ⚙️ Configuration
+
+Configuration is loaded from environment variables (double-underscore nesting) or an optional YAML file via `CONFIG_PATH`.
+
+| Variable                 | Default             | Description                         |
+| ------------------------ | ------------------- | ----------------------------------- |
+| `HTTP__ADDRESS`          | `127.0.0.1:3000`    | HTTP API listen address             |
+| `HTTP__PROXY_HEADER`     | `X-Forwarded-For`   | Trusted proxy header                |
+| `HTTP__PROXIES`          | *(empty)*           | Comma-separated trusted proxies     |
+| `HTTP__OPENAPI__ENABLED` | `true`              | Enable Swagger UI at `/api/v1/docs` |
+| `MODEM__PORT`            | `/dev/ttyUSB0`      | Serial device of the modem          |
+| `MODEM__BAUD_RATE`       | `115200`            | Serial baud rate                    |
+| `MODEM__INIT_TIMEOUT`    | `30s`               | Modem init timeout                  |
+| `MODEM__COMMAND_TIMEOUT` | `10s`               | Per-command timeout                 |
+| `STORAGE__PATH`          | `data/storage.json` | Local JSON storage file             |
+| `AUTH__BASIC__USERNAME`  | `sms`               | Basic auth username                 |
+| `AUTH__BASIC__PASSWORD`  | *(required)*        | Basic auth password                 |
+| `DEVICE__NAME`           | *(empty)*           | Device display name                 |
+| `CONFIG_PATH`            | *(empty)*           | Optional YAML config file path      |
+
+Full reference: [Custom Gateway Setup](https://docs.sms-gate.app/getting-started/custom-gateway/).
+
+## 📦 Deployment
+
+```bash
+docker run -d --name at-gateway \
+  --device /dev/ttyUSB0 \
+  -e MODEM__PORT=/dev/ttyUSB0 \
+  -e AUTH__BASIC__PASSWORD=change-me \
+  -p 3000:3000 \
+  ghcr.io/android-sms-gateway/at-gateway:latest
 ```
 
-CLI commands:
+## 🔌 API Overview
 
-```sh
-go run . --help                     # list commands
-go run . serve                      # explicit serve
-go run . example                    # one-shot demo
-go run . --version                  # print version
-```
+| Method | Path               | Description                     |
+| ------ | ------------------ | ------------------------------- |
+| GET    | `/health`          | Health probes (`live`, `ready`) |
+| GET    | `/metrics`         | Prometheus metrics              |
+| GET    | `/api/v1`          | Service status                  |
+| GET    | `/api/v1/devices`  | Registered devices              |
+| GET    | `/api/v1/messages` | Message endpoints (scaffolded)  |
 
-Default server address is `127.0.0.1:3000`.
+All `/api/v1` routes require HTTP Basic auth. Full reference: [OpenAPI docs](https://docs.sms-gate.app/).
 
-Helpful endpoints:
+## 📚 Documentation
 
-* Health endpoints (via `healthfx`), typically under `/health`.
-* OpenAPI docs: `http://127.0.0.1:3000/api/v1/docs`.
+- [Custom Gateway Setup](https://docs.sms-gate.app/getting-started/custom-gateway/)
+- [Central docs](https://docs.sms-gate.app/)
 
-Configuration:
+## 🤝 Contributing
 
-* Environment variables are loaded via `go-core-fx/config`.
-* You can point to a YAML file using:
-  ```sh
-  export CONFIG_PATH=./config.local.yaml
-  ```
-* Telegram token is configured via the app config (`telegram.token`) and required to use bot handlers.
+Contributions are welcome. Open an issue or pull request; follow the repo's `make fmt` / `make lint` / `make test` checks and the [README style guide](https://docs.sms-gate.app/).
 
-Quality checks:
+## 📄 License
 
-```sh
-make fmt
-make lint
-make test
-make coverage
-```
+Apache-2.0. See [LICENSE](LICENSE).
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- ROADMAP -->
-## Roadmap
-
-- [x] Fiber API scaffold
-- [x] OpenAPI + Swagger integration
-- [x] Telegram bot wiring
-- [ ] Database module integration
-- [ ] Auth middleware and RBAC
-- [ ] CI release pipeline hardening
-
-See the [open issues](https://github.com/capcom6/go-project-template/issues) for a full list of proposed features (and known issues).
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- CONTRIBUTING -->
-## Contributing
-
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
-
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- LICENSE -->
-## License
-
-Distributed under the Apache 2.0 License. See `LICENSE` for more information.
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- CONTACT -->
-## Contact
-
-Maintainer: [@capcom6](https://github.com/capcom6)
-
-Project Link: [https://github.com/capcom6/go-project-template](https://github.com/capcom6/go-project-template)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- ACKNOWLEDGMENTS -->
-## Acknowledgments
-
-* [Best README Template](https://github.com/othneildrew/Best-README-Template)
-* [Go Fiber](https://github.com/gofiber/fiber)
-* [Uber Fx](https://github.com/uber-go/fx)
-* [Telego](https://github.com/mymmrac/telego)
-* [Shields.io](https://shields.io)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-
-
-<!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/capcom6/go-project-template.svg?style=for-the-badge
-[contributors-url]: https://github.com/capcom6/go-project-template/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/capcom6/go-project-template.svg?style=for-the-badge
-[forks-url]: https://github.com/capcom6/go-project-template/network/members
-[stars-shield]: https://img.shields.io/github/stars/capcom6/go-project-template.svg?style=for-the-badge
-[stars-url]: https://github.com/capcom6/go-project-template/stargazers
-[issues-shield]: https://img.shields.io/github/issues/capcom6/go-project-template.svg?style=for-the-badge
-[issues-url]: https://github.com/capcom6/go-project-template/issues
-[license-shield]: https://img.shields.io/github/license/capcom6/go-project-template.svg?style=for-the-badge
-[license-url]: https://github.com/capcom6/go-project-template/blob/master/LICENSE
-[go-shield]: https://img.shields.io/badge/go-1.25%2B-00ADD8?style=for-the-badge&logo=go
-[go-url]: https://go.dev/
-[fiber-shield]: https://img.shields.io/badge/Fiber-v2-00b894?style=for-the-badge
-[fiber-url]: https://github.com/gofiber/fiber
-[fx-shield]: https://img.shields.io/badge/Uber%20Fx-DI-6f42c1?style=for-the-badge
-[fx-url]: https://github.com/uber-go/fx
-[cli-shield]: https://img.shields.io/badge/urfave%2Fcli-v3-00b4d8?style=for-the-badge
-[cli-url]: https://github.com/urfave/cli
-[swagger-shield]: https://img.shields.io/badge/OpenAPI-Swagger-85EA2D?style=for-the-badge
-[swagger-url]: https://github.com/swaggo/swag
-[telegram-shield]: https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram
-[telegram-url]: https://core.telegram.org/bots
+<!-- Reference-style badge URLs: style=for-the-badge is mandatory -->
+[contributors-shield]: https://img.shields.io/github/contributors/android-sms-gateway/at-gateway?style=for-the-badge
+[contributors-url]: https://github.com/android-sms-gateway/at-gateway/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/android-sms-gateway/at-gateway?style=for-the-badge
+[forks-url]: https://github.com/android-sms-gateway/at-gateway/network/members
+[stars-shield]: https://img.shields.io/github/stars/android-sms-gateway/at-gateway?style=for-the-badge
+[stars-url]: https://github.com/android-sms-gateway/at-gateway/stargazers
+[issues-shield]: https://img.shields.io/github/issues/android-sms-gateway/at-gateway?style=for-the-badge
+[issues-url]: https://github.com/android-sms-gateway/at-gateway/issues
+[license-shield]: https://img.shields.io/github/license/android-sms-gateway/at-gateway?style=for-the-badge
+[license-url]: https://github.com/android-sms-gateway/at-gateway/blob/main/LICENSE
