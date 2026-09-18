@@ -6,14 +6,16 @@ import (
 )
 
 type Metrics struct {
-	CommandsTotal    *prometheus.CounterVec
-	CommandDuration  prometheus.Histogram
-	SMSReceivedTotal prometheus.Counter
-	ModemState       prometheus.Gauge
-	SignalQuality    prometheus.Gauge
-	ReconnectsTotal  prometheus.Counter
+	CommandsTotal               *prometheus.CounterVec
+	CommandDuration             prometheus.Histogram
+	ModemState                  prometheus.Gauge
+	SignalQuality               prometheus.Gauge
+	ReconnectsTotal             prometheus.Counter
+	DeliveryReportsDroppedTotal prometheus.Counter
 }
 
+// NewMetrics registers the modem metrics with the default Prometheus registry
+// and returns their handles.
 func NewMetrics() *Metrics {
 	m := &Metrics{
 		CommandsTotal: promauto.NewCounterVec(
@@ -28,14 +30,6 @@ func NewMetrics() *Metrics {
 				Name:    "at_gateway_modem_command_duration_seconds",
 				Help:    "Duration of AT commands in seconds",
 				Buckets: []float64{0.1, 0.5, 1, 2, 5},
-			},
-		),
-		// No SMS-send counter is registered: no send path exists (gsm/PDU
-		// deferred to the SMS phase); re-add it there with send-path wiring.
-		SMSReceivedTotal: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "at_gateway_modem_sms_received_total",
-				Help: "Total number of SMS received",
 			},
 		),
 		ModemState: promauto.NewGauge(
@@ -54,6 +48,12 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{
 				Name: "at_gateway_modem_reconnects_total",
 				Help: "Total number of modem reconnections",
+			},
+		),
+		DeliveryReportsDroppedTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_modem_delivery_reports_dropped_total",
+				Help: "Total number of delivery reports dropped because the consumer channel was full",
 			},
 		),
 	}
