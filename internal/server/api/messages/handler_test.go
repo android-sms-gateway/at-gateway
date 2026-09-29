@@ -18,6 +18,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	apimessages "github.com/android-sms-gateway/at-gateway/internal/server/api/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/go-core-fx/bunfx"
 	"github.com/go-core-fx/fiberfx"
@@ -103,25 +104,28 @@ func newHandlerWithRepo(t *testing.T) (*fiber.App, *messages.Repository, *bun.DB
 
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 
-	metrics := &messages.Metrics{
-		EnqueuedTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "handler_test_enqueued_total", Help: "Test counter"},
-		),
-		SentTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "handler_test_sent_total", Help: "Test counter"},
-		),
-		DeliveredTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "handler_test_delivered_total", Help: "Test counter"},
-		),
-		FailedTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "handler_test_failed_total", Help: "Test counter"},
-		),
-		CancelledTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "handler_test_cancelled_total", Help: "Test counter"},
-		),
-	}
+	metrics := newHandlerMetrics()
 
-	messagesSvc := messages.NewService(messages.Config{}, repo, devicesSvc, nil, metrics, zap.NewNop())
+	webhooksSvc, err := webhooks.NewService(
+		webhooks.Config{SigningKey: "messages-handler-test-key"},
+		webhooks.NewRepository(bunDB),
+		devicesSvc,
+		storageSvc,
+		nil,
+		zap.NewNop(),
+	)
+	if err != nil {
+		t.Fatalf("create webhooks service: %v", err)
+	}
+	messagesSvc := messages.NewService(
+		messages.Config{},
+		repo,
+		devicesSvc,
+		nil,
+		webhooksSvc,
+		metrics,
+		zap.NewNop(),
+	)
 	handler := apimessages.NewHandler(messagesSvc, zap.NewNop(), validator.New())
 
 	app := fiber.New(fiber.Config{
@@ -131,6 +135,18 @@ func newHandlerWithRepo(t *testing.T) (*fiber.App, *messages.Repository, *bun.DB
 	handler.Register(app.Group("/api/v1"))
 
 	return app, repo, bunDB
+}
+
+// newHandlerMetrics isolates promauto registration for each handler fixture.
+func newHandlerMetrics() *messages.Metrics {
+	registerer := &prometheus.DefaultRegisterer
+	previous := *registerer
+	*registerer = prometheus.NewRegistry()
+	defer func() {
+		*registerer = previous
+	}()
+
+	return messages.NewMetrics()
 }
 
 func postEnqueue(t *testing.T, app *fiber.App, query, phone string) (*http.Response, map[string]any) {

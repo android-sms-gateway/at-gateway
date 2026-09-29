@@ -117,7 +117,64 @@ DELETE {{baseURL}}/api/v1/messages/{{messageID}} HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
 # ============================================================
-# 5. AUTH
+# 5. WEBHOOKS
+# ============================================================
+
+###
+# Empty registry -> 200 []
+GET {{baseURL}}/api/v1/webhooks HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Create -> 201 echo with generated id + deviceId null (registered for all devices)
+# @name postWebhook
+POST {{baseURL}}/api/v1/webhooks HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"url":"https://127.0.0.1:9099/hook","event":"sms:sent"}
+
+###
+# Invalid event -> 400 {"message":"validation failed: _: validation failed: invalid event type","code":400,"details":[{"field":"_","tag":"","message":"validation failed: invalid event type"}]}
+POST {{baseURL}}/api/v1/webhooks HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"url":"http://127.0.0.1:9099/hook","event":"bogus:event"}
+
+###
+# Invalid url (edge validator http_url) -> 400 validation failed
+POST {{baseURL}}/api/v1/webhooks HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"url":"not-a-url","event":"sms:sent"}
+
+###
+@webhookID={{postWebhook.response.body.$.id}}
+
+###
+# List -> 200 with deviceId null for the unscoped webhook
+GET {{baseURL}}/api/v1/webhooks HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Delete -> 204 (idempotent; unknown id also 204)
+DELETE {{baseURL}}/api/v1/webhooks/{{webhookID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Second delete of the same id -> 204 again (no 404)
+DELETE {{baseURL}}/api/v1/webhooks/{{webhookID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Unknown id -> 204 (server parity: no not-found case)
+DELETE {{baseURL}}/api/v1/webhooks/does-not-exist HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+# ============================================================
+# 6. AUTH
 # ============================================================
 
 ###
