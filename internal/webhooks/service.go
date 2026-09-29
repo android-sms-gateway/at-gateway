@@ -67,7 +67,7 @@ type eventEnvelope struct {
 
 const (
 	signingKeyStorageKey = "webhooks.signing_key"
-	signingKeyLength     = 8
+	signingKeyLength     = 32
 )
 
 var (
