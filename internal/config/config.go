@@ -55,6 +55,22 @@ type messagesConfig struct {
 	DefaultRegion string        `koanf:"default_region"`
 }
 
+type webhooksConfig struct {
+	RetryCount int                 `koanf:"retry_count"`
+	SigningKey string              `koanf:"signing_key"`
+	Queue      webhooksQueueConfig `koanf:"queue"`
+}
+
+type webhooksQueueConfig struct {
+	BatchSize              int           `koanf:"batch_size"`
+	RequestTimeout         time.Duration `koanf:"request_timeout"`
+	DialTimeout            time.Duration `koanf:"dial_timeout"`
+	RetryBaseDelay         time.Duration `koanf:"retry_base_delay"`
+	IdleDelay              time.Duration `koanf:"idle_delay"`
+	StuckProcessingTimeout time.Duration `koanf:"stuck_processing_timeout"`
+	CleanupRetention       time.Duration `koanf:"cleanup_retention"`
+}
+
 type Config struct {
 	HTTP     http           `koanf:"http"`
 	Modem    modemConfig    `koanf:"modem"`
@@ -63,6 +79,7 @@ type Config struct {
 	Device   deviceConfig   `koanf:"device"`
 	Database databaseConfig `koanf:"database"`
 	Messages messagesConfig `koanf:"messages"`
+	Webhooks webhooksConfig `koanf:"webhooks"`
 }
 
 // Default returns the built-in configuration: a local-only HTTP server, the
@@ -106,6 +123,19 @@ func Default() Config {
 			PollInterval:  time.Second,
 			MaxSegments:   10,
 			DefaultRegion: "RU",
+		},
+		Webhooks: webhooksConfig{
+			RetryCount: 15,
+			SigningKey: "",
+			Queue: webhooksQueueConfig{
+				BatchSize:              20,
+				RequestTimeout:         30 * time.Second,
+				DialTimeout:            5 * time.Second,
+				RetryBaseDelay:         5 * time.Second,
+				IdleDelay:              5 * time.Second,
+				StuckProcessingTimeout: 5 * time.Minute,
+				CleanupRetention:       7 * 24 * time.Hour,
+			},
 		},
 	}
 }
