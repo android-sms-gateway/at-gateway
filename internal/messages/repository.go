@@ -27,15 +27,6 @@ const (
 	statesLastStateExpr = "json_extract(states, '$[#-1].state')"
 )
 
-// sqliteTime returns t in the same textual form bun uses to persist [time.Time]
-// values, so SQLite column comparisons (valid_until <= ?, schedule_at <= ?)
-// sort identically on both sides of the operator. Binding a raw [time.Time]
-// instead would let the driver format it differently (e.g. " +0000 UTC") and
-// break ordering at equal-second boundaries.
-func sqliteTime(t time.Time) string {
-	return t.UTC().Format("2006-01-02 15:04:05.999999-07:00")
-}
-
 // Repository is the bun-backed data access layer for persisted messages.
 type Repository struct {
 	db *bun.DB
@@ -142,10 +133,20 @@ func (r *Repository) List(ctx context.Context, options ListOptions) ([]Message, 
 
 // Cancel transitions the message and its recipients (except those already
 // Failed or Cancelled) to ProcessingStateCancelled and returns the updated
-// message.
+// message. Only the call that actually flips the row succeeds: an update that
+// affects no rows (already Cancelled or Failed) reports ErrNotPending for an
+// existing message, so concurrent cancels cannot both succeed and emit
+// duplicate sms:cancelled events.
 func (r *Repository) Cancel(ctx context.Context, id string) (*Message, error) {
-	if err := r.updateState(ctx, id, smsgateway.ProcessingStateCancelled, nil); err != nil {
+	rows, err := r.updateState(ctx, id, smsgateway.ProcessingStateCancelled, nil)
+	if err != nil {
 		return nil, err
+	}
+	if rows == 0 {
+		if _, getErr := r.GetByID(ctx, id); getErr != nil {
+			return nil, getErr
+		}
+		return nil, ErrNotPending
 	}
 
 	message, err := r.GetByID(ctx, id)
@@ -346,9 +347,10 @@ func (r *Repository) updateState(
 	id string,
 	state smsgateway.ProcessingState,
 	where func(*bun.UpdateQuery) *bun.UpdateQuery,
-) error {
+) (int64, error) {
 	now := time.Now().UTC()
 	entry := stateModel{State: state, At: now}
+	var affected int64
 
 	err := r.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		query := tx.NewUpdate().
@@ -370,6 +372,7 @@ func (r *Repository) updateState(
 		if rowsErr != nil {
 			return fmt.Errorf("update message state rows affected: %w", rowsErr)
 		}
+		affected = rows
 		if rows == 0 {
 			return nil
 		}
@@ -387,10 +390,10 @@ func (r *Repository) updateState(
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("update message state: %w", err)
+		return 0, fmt.Errorf("update message state: %w", err)
 	}
 
-	return nil
+	return affected, nil
 }
 
 // DequeueNextPending atomically claims the oldest claimable message (FIFO by
@@ -430,7 +433,8 @@ func (r *Repository) DequeueNextPending(ctx context.Context) (*Message, error) {
 					string(smsgateway.ProcessingStateProcessed),
 				})).
 				Where("valid_until IS NOT NULL").
-				Where("valid_until <= ?", sqliteTime(now)),
+				// The parameter relies on Bun's time serialization; TestDequeueNextPending_ValidUntilBoundary pins it.
+				Where("valid_until <= ?", now),
 			).
 			Exec(ctx); err != nil {
 			return fmt.Errorf("expire recipients: %w", err)
@@ -447,11 +451,14 @@ func (r *Repository) DequeueNextPending(ctx context.Context) (*Message, error) {
 				string(smsgateway.ProcessingStateProcessed),
 			})).
 			Where("valid_until IS NOT NULL").
-			Where("valid_until <= ?", sqliteTime(now)).
+			// The parameter relies on Bun's time serialization; TestDequeueNextPending_ValidUntilBoundary pins it.
+			Where("valid_until <= ?", now).
 			Exec(ctx); err != nil {
 			return fmt.Errorf("expire messages: %w", err)
 		}
 
+		// The outer schedule_at parameter relies on Bun's time serialization; TestDequeueNextPending_ScheduleAtBoundary pins it.
+		// The nested schedule_at parameter relies on Bun's time serialization; TestDequeueNextPending_ScheduleAtBoundary pins it.
 		err := tx.NewRaw(`
 			UPDATE messages
 			SET state = ?, updated_at = ?, states = json_insert(states, '$[#]', json(?))
@@ -470,10 +477,10 @@ func (r *Repository) DequeueNextPending(ctx context.Context) (*Message, error) {
 			entry.String(),
 			smsgateway.ProcessingStatePending,
 			smsgateway.ProcessingStateProcessed,
-			sqliteTime(now),
+			now,
 			smsgateway.ProcessingStatePending,
 			smsgateway.ProcessingStateProcessed,
-			sqliteTime(now),
+			now,
 		).Scan(ctx, &extID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("claim message: %w", err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	gonanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/nyaruka/phonenumbers"
@@ -20,8 +21,9 @@ type Service struct {
 	config   Config
 	messages *Repository
 
-	devicesSvc *devices.Service
-	modemSvc   *modem.Service
+	devicesSvc  *devices.Service
+	modemSvc    *modem.Service
+	webhooksSvc *webhooks.Service
 
 	metrics *Metrics
 
@@ -29,14 +31,15 @@ type Service struct {
 }
 
 // NewService wires the message service with its repository and the device,
-// modem, metrics and logger dependencies. A zero or negative PollInterval
-// falls back to 1s and an empty DefaultRegion to the configured default; the
-// returned service is driven by Run.
+// modem, webhook, metrics and logger dependencies. A zero or negative
+// PollInterval falls back to 1s and an empty DefaultRegion to the configured
+// default; the returned service is driven by Run.
 func NewService(
 	config Config,
 	messages *Repository,
 	devicesSvc *devices.Service,
 	modemSvc *modem.Service,
+	webhooksSvc *webhooks.Service,
 	metrics *Metrics,
 	logger *zap.Logger,
 ) *Service {
@@ -51,8 +54,9 @@ func NewService(
 		config:   config,
 		messages: messages,
 
-		devicesSvc: devicesSvc,
-		modemSvc:   modemSvc,
+		devicesSvc:  devicesSvc,
+		modemSvc:    modemSvc,
+		webhooksSvc: webhooksSvc,
 
 		metrics: metrics,
 
@@ -107,7 +111,7 @@ func (s *Service) Enqueue(ctx context.Context, input MessageInput, opts EnqueueO
 	if err := s.messages.Create(ctx, &input); err != nil {
 		return nil, fmt.Errorf("create message: %w", err)
 	}
-	s.metrics.EnqueuedTotal.Inc()
+	s.metrics.IncEnqueued()
 
 	message, err := s.messages.GetByID(ctx, input.ExtID)
 	if err != nil {
@@ -143,7 +147,16 @@ func (s *Service) Cancel(ctx context.Context, extID string) (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.metrics.CancelledTotal.Inc()
+	s.metrics.IncCancelled()
+
+	now := time.Now().UTC()
+	for _, recipient := range message.Recipients {
+		if recipient.State != smsgateway.ProcessingStateCancelled {
+			continue
+		}
+
+		s.webhooksSvc.EmitSmsCancelled(s.messageEvent(message, recipient, now))
+	}
 
 	return message, nil
 }
@@ -218,9 +231,9 @@ func (s *Service) handleDeliveryReport(ctx context.Context, report modem.Deliver
 		zap.String("state", string(state)),
 	)
 	if state == smsgateway.ProcessingStateDelivered {
-		s.metrics.DeliveredTotal.Inc()
+		s.metrics.IncDelivered()
 	} else {
-		s.metrics.FailedTotal.Inc()
+		s.metrics.IncFailed()
 	}
 
 	// Re-derive the message state from its recipients: all Delivered flips
@@ -232,6 +245,20 @@ func (s *Service) handleDeliveryReport(ctx context.Context, report modem.Deliver
 	if err != nil {
 		s.logger.Error("load delivery-reported message", zap.Error(err))
 		return
+	}
+
+	now := time.Now().UTC()
+	for _, recipient := range message.Recipients {
+		if recipient.RefID == nil || *recipient.RefID != report.Reference || recipient.State != state {
+			continue
+		}
+
+		if state == smsgateway.ProcessingStateDelivered {
+			s.webhooksSvc.EmitSmsDelivered(s.messageEvent(message, recipient, now))
+		} else {
+			s.webhooksSvc.EmitSmsFailed(s.messageEvent(message, recipient, now), reason)
+		}
+		break
 	}
 
 	states := make([]smsgateway.ProcessingState, 0, len(message.Recipients))
@@ -321,12 +348,12 @@ func (s *Service) processRecipient(
 	}
 
 	if message.TextContent == nil {
-		s.metrics.FailedTotal.Inc()
+		s.metrics.IncFailed()
 
-		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
+		return s.failRecipient(
 			ctx,
-			message.ID,
-			recipient.PhoneNumber,
+			message,
+			recipient,
 			"only text messages are supported",
 		)
 	}
@@ -337,14 +364,9 @@ func (s *Service) processRecipient(
 	// encoding (GSM-7 default alphabet, UCS-2 fallback), so a text passing
 	// here always fits the cap.
 	if err := modem.ValidateText(message.TextContent.Text, s.config.MaxSegments); err != nil {
-		s.metrics.FailedTotal.Inc()
+		s.metrics.IncFailed()
 
-		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
-			ctx,
-			message.ID,
-			recipient.PhoneNumber,
-			err.Error(),
-		)
+		return s.failRecipient(ctx, message, recipient, err.Error())
 	}
 
 	// A missing withDeliveryReport option defaults to TRUE (ecosystem
@@ -359,26 +381,69 @@ func (s *Service) processRecipient(
 		lo.FromPtrOr(message.WithDeliveryReport, true),
 	)
 	if err != nil {
-		s.metrics.FailedTotal.Inc()
+		s.metrics.IncFailed()
 
-		return smsgateway.ProcessingStateFailed, s.messages.SetRecipientFailed(
-			ctx,
-			message.ID,
-			recipient.PhoneNumber,
-			err.Error(),
-		)
+		return s.failRecipient(ctx, message, recipient, err.Error())
 	}
 
 	// ref_id stores the reference of the LAST accepted part: a recipient is
 	// Sent only when the whole multi-part sequence reached the modem.
-	s.metrics.SentTotal.Inc()
+	s.metrics.IncSent()
 
-	return smsgateway.ProcessingStateSent, s.messages.SetRecipientSent(
+	err = s.messages.SetRecipientSent(
 		ctx,
 		message.ID,
 		recipient.PhoneNumber,
 		refs[len(refs)-1],
 	)
+	if err != nil {
+		return smsgateway.ProcessingStateFailed, err
+	}
+
+	s.webhooksSvc.EmitSmsSent(s.messageEvent(message, recipient, time.Now().UTC()))
+
+	return smsgateway.ProcessingStateSent, nil
+}
+
+func (s *Service) failRecipient(
+	ctx context.Context,
+	message *Message,
+	recipient Recipient,
+	reason string,
+) (smsgateway.ProcessingState, error) {
+	if err := s.messages.SetRecipientFailed(
+		ctx,
+		message.ID,
+		recipient.PhoneNumber,
+		reason,
+	); err != nil {
+		return smsgateway.ProcessingStateFailed, err
+	}
+
+	s.webhooksSvc.EmitSmsFailed(s.messageEvent(message, recipient, time.Now().UTC()), reason)
+
+	return smsgateway.ProcessingStateFailed, nil
+}
+
+// messageEvent builds the webhook input for one recipient of an outgoing
+// message: PhoneNumber is the recipient number and Recipient repeats it, as
+// the client-go contract requires for the outgoing direction. Sender is the
+// device's own number as reported by +CNUM, read from the modem's cached SIM
+// state (no modem traffic); it is empty when the SIM provides no number,
+// which the contract explicitly allows.
+func (s *Service) messageEvent(
+	message *Message,
+	recipient Recipient,
+	at time.Time,
+) webhooks.MessageEvent {
+	return webhooks.MessageEvent{
+		MessageID:   message.ID,
+		PhoneNumber: recipient.PhoneNumber,
+		Sender:      s.modemSvc.SIM().PhoneNumber,
+		Recipient:   lo.ToPtr(recipient.PhoneNumber),
+		SimNumber:   message.SimNumber,
+		At:          at,
+	}
 }
 
 // resolveFinalState derives the message-level state from the recipient
