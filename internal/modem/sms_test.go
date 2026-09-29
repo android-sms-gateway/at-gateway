@@ -129,6 +129,40 @@ func smsResponder(acks ...string) func(string) [][]byte {
 	}
 }
 
+// simResponder answers the GetSimInfo query sequence: the boot rows plus one
+// canned line per CNUM/CCID/COPS/CSQ/CREG query. Every field is scripted so no
+// command hits the harness timeout; an empty cnumLine (or an empty string)
+// models a modem that reports no MSISDN.
+func simResponder(cnumLine, ccidLine, copsLine, csqLine, cregLine string) func(string) [][]byte {
+	return func(w string) [][]byte {
+		if resps := initResponder(w); resps != nil {
+			return resps
+		}
+
+		var line string
+		switch w {
+		case "AT+CNUM\r\n":
+			line = cnumLine
+		case "AT+CCID\r\n":
+			line = ccidLine
+		case "AT+COPS?\r\n":
+			line = copsLine
+		case "AT+CSQ\r\n":
+			line = csqLine
+		case "AT+CREG?\r\n":
+			line = cregLine
+		default:
+			return nil
+		}
+
+		if line == "" {
+			return [][]byte{okResponse("OK")}
+		}
+
+		return [][]byte{okResponse(line), okResponse("OK")}
+	}
+}
+
 // newCommands boots a scripted modem through the full init sequence and
 // returns the ready Commands handle plus the modem for wire assertions.
 func newCommands(t *testing.T, respond func(string) [][]byte) (*modem.Commands, *scriptedModem) {
@@ -624,6 +658,78 @@ func TestSendSMS_NoCMGSLine(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no +CMGS line in response") {
 		t.Fatalf("error %q does not describe the missing reference line", err)
+	}
+}
+
+// TestGetSimInfo pins the +CNUM -> SimInfo.PhoneNumber mapping that the
+// outgoing webhook events read as their sender field: the MSISDN is extracted
+// unquoted from the number field, and a modem that reports no MSISDN (or
+// answers +CNUM with no line at all) degrades to an empty phone number rather
+// than failing the query.
+func TestGetSimInfo(t *testing.T) {
+	tests := []struct {
+		name           string
+		cnumLine       string
+		wantPhone      string
+		wantICCID      string
+		wantCarrier    string
+		wantPercent    int
+		wantRegistered bool
+	}{
+		{
+			name:           "reported msisdn",
+			cnumLine:       `+CNUM: "MegaFon","+79991234567",145`,
+			wantPhone:      "+79991234567",
+			wantICCID:      "+CCID: 25001123456789012345",
+			wantCarrier:    "MegaFon",
+			wantPercent:    70,
+			wantRegistered: true,
+		},
+		{
+			name:           "no msisdn reported",
+			cnumLine:       "",
+			wantPhone:      "",
+			wantICCID:      "+CCID: 25001123456789012345",
+			wantCarrier:    "MegaFon",
+			wantPercent:    70,
+			wantRegistered: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commands, _ := newCommands(t, simResponder(
+				tt.cnumLine,
+				tt.wantICCID,
+				`+COPS: 0,0,"`+tt.wantCarrier+`",7`,
+				"+CSQ: 22,99",
+				"+CREG: 0,1",
+			))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			info, err := commands.GetSimInfo(ctx)
+			if err != nil {
+				t.Fatalf("GetSimInfo: %v", err)
+			}
+
+			if info.PhoneNumber != tt.wantPhone {
+				t.Errorf("phone number = %q, want %q", info.PhoneNumber, tt.wantPhone)
+			}
+			if info.ICCID != tt.wantICCID {
+				t.Errorf("ICCID = %q, want %q", info.ICCID, tt.wantICCID)
+			}
+			if info.Carrier != tt.wantCarrier {
+				t.Errorf("carrier = %q, want %q", info.Carrier, tt.wantCarrier)
+			}
+			if info.SignalPercent != tt.wantPercent {
+				t.Errorf("signal percent = %d, want %d", info.SignalPercent, tt.wantPercent)
+			}
+			if info.NetworkRegistered != tt.wantRegistered {
+				t.Errorf("network registered = %v, want %v", info.NetworkRegistered, tt.wantRegistered)
+			}
+		})
 	}
 }
 
