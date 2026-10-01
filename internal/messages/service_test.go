@@ -10,6 +10,7 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
+	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -53,7 +54,11 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 		t.Fatalf("create webhooks service: %v", err)
 	}
 
-	return messages.NewService(config, repo, devicesSvc, nil, webhooksSvc, metrics, zap.NewNop())
+	// The modem service is never run: webhook emission reads only its cached
+	// SIM state, so a disconnected service is enough here.
+	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil)
+
+	return messages.NewService(config, repo, devicesSvc, modemSvc, webhooksSvc, metrics, zap.NewNop())
 }
 
 func newEnqueueInput(extID string, phones ...string) messages.MessageInput {

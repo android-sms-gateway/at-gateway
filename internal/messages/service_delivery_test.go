@@ -108,11 +108,17 @@ func newWhiteboxService(t *testing.T) (*Service, *Repository, *bun.DB, *webhooks
 		),
 	}
 
+	// The modem service is never run by the fixture: a disconnected service
+	// still serves cached-SIM reads (empty phone number), which is exactly the
+	// degraded Sender the webhook contract permits. Nil metrics is safe here -
+	// no modem code path runs.
+	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil)
+
 	return NewService(
 		Config{},
 		repo,
 		devicesSvc,
-		nil,
+		modemSvc,
 		webhooksSvc,
 		metrics,
 		zap.NewNop(),
@@ -223,6 +229,27 @@ type queuedSmsPayload struct {
 	Reason      string    `json:"reason,omitempty"`
 }
 
+// requireOutgoingIdentity pins the identity fields shared by every outgoing
+// webhook event: phoneNumber is the recipient, recipient repeats it (the
+// client-go contract for the outgoing direction) and sender is the device's
+// own number. The fixture's modem never connected, so no +CNUM number was
+// cached and sender stays empty - the degraded case the contract allows.
+func requireOutgoingIdentity(t *testing.T, payload queuedSmsPayload, phone string) {
+	t.Helper()
+
+	if payload.PhoneNumber != phone {
+		t.Errorf("phoneNumber = %q, want %q", payload.PhoneNumber, phone)
+	}
+	if payload.Sender != "" {
+		t.Errorf("sender = %q, want empty for an unqueried SIM", payload.Sender)
+	}
+	if payload.Recipient == nil {
+		t.Error("recipient is nil, want the recipient number")
+	} else if *payload.Recipient != phone {
+		t.Errorf("recipient = %q, want %q", *payload.Recipient, phone)
+	}
+}
+
 func requireQueueCount(t *testing.T, bunDB *bun.DB, want int) {
 	t.Helper()
 
@@ -310,9 +337,7 @@ func TestProcessPending_FailedEmitsWebhookForEveryFailurePath(t *testing.T) {
 			if payload.MessageID != message.ID {
 				t.Errorf("messageId = %q, want %q", payload.MessageID, message.ID)
 			}
-			if payload.PhoneNumber != "+79990001234" {
-				t.Errorf("phoneNumber = %q, want +79990001234", payload.PhoneNumber)
-			}
+			requireOutgoingIdentity(t, payload, "+79990001234")
 			if !strings.Contains(payload.Reason, tt.wantReasonText) {
 				t.Errorf("reason = %q, want substring %q", payload.Reason, tt.wantReasonText)
 			}
@@ -350,9 +375,7 @@ func TestCancel_EmitsWebhookForEachCancelledRecipient(t *testing.T) {
 	if payload.MessageID != message.ID {
 		t.Errorf("messageId = %q, want %q", payload.MessageID, message.ID)
 	}
-	if payload.PhoneNumber != "+79990004321" {
-		t.Errorf("phoneNumber = %q, want +79990004321", payload.PhoneNumber)
-	}
+	requireOutgoingIdentity(t, payload, "+79990004321")
 	if payload.CancelledAt.IsZero() {
 		t.Error("cancelledAt is zero")
 	}
@@ -455,12 +478,11 @@ func TestHandleDeliveryReport_Delivered(t *testing.T) {
 	if payload.MessageID != extID {
 		t.Errorf("messageId = %q, want %q", payload.MessageID, extID)
 	}
-	if payload.PhoneNumber != phone {
-		t.Errorf("phoneNumber = %q, want stored E.164 %q", payload.PhoneNumber, phone)
-	}
+	requireOutgoingIdentity(t, payload, phone)
 	if payload.DeliveredAt.IsZero() {
 		t.Error("deliveredAt is zero")
 	}
+	requireOutgoingIdentity(t, payload, phone)
 }
 
 // TestHandleDeliveryReport_PermanentFailure pins the failure path: a
@@ -504,15 +526,13 @@ func TestHandleDeliveryReport_PermanentFailure(t *testing.T) {
 	if payload.MessageID != extID {
 		t.Errorf("messageId = %q, want %q", payload.MessageID, extID)
 	}
-	if payload.PhoneNumber != phone {
-		t.Errorf("phoneNumber = %q, want stored E.164 %q", payload.PhoneNumber, phone)
-	}
 	if payload.Reason != "delivery report: SC status 0x41" {
 		t.Errorf("reason = %q, want SC status reason", payload.Reason)
 	}
 	if payload.FailedAt.IsZero() {
 		t.Error("failedAt is zero")
 	}
+	requireOutgoingIdentity(t, payload, phone)
 }
 
 // TestHandleDeliveryReport_TemporaryIgnored pins the temporary-error rule: a

@@ -155,14 +155,7 @@ func (s *Service) Cancel(ctx context.Context, extID string) (*Message, error) {
 			continue
 		}
 
-		s.webhooksSvc.EmitSmsCancelled(webhooks.MessageEvent{
-			MessageID:   message.ID,
-			PhoneNumber: recipient.PhoneNumber,
-			Sender:      "",
-			Recipient:   nil,
-			SimNumber:   message.SimNumber,
-			At:          now,
-		})
+		s.webhooksSvc.EmitSmsCancelled(s.messageEvent(message, recipient, now))
 	}
 
 	return message, nil
@@ -261,23 +254,9 @@ func (s *Service) handleDeliveryReport(ctx context.Context, report modem.Deliver
 		}
 
 		if state == smsgateway.ProcessingStateDelivered {
-			s.webhooksSvc.EmitSmsDelivered(webhooks.MessageEvent{
-				MessageID:   message.ID,
-				PhoneNumber: recipient.PhoneNumber,
-				Sender:      "",
-				Recipient:   nil,
-				SimNumber:   message.SimNumber,
-				At:          now,
-			})
+			s.webhooksSvc.EmitSmsDelivered(s.messageEvent(message, recipient, now))
 		} else {
-			s.webhooksSvc.EmitSmsFailed(webhooks.MessageEvent{
-				MessageID:   message.ID,
-				PhoneNumber: recipient.PhoneNumber,
-				Sender:      "",
-				Recipient:   nil,
-				SimNumber:   message.SimNumber,
-				At:          now,
-			}, reason)
+			s.webhooksSvc.EmitSmsFailed(s.messageEvent(message, recipient, now), reason)
 		}
 		break
 	}
@@ -421,14 +400,7 @@ func (s *Service) processRecipient(
 		return smsgateway.ProcessingStateFailed, err
 	}
 
-	s.webhooksSvc.EmitSmsSent(webhooks.MessageEvent{
-		MessageID:   message.ID,
-		PhoneNumber: recipient.PhoneNumber,
-		Sender:      "",
-		Recipient:   nil,
-		SimNumber:   message.SimNumber,
-		At:          time.Now().UTC(),
-	})
+	s.webhooksSvc.EmitSmsSent(s.messageEvent(message, recipient, time.Now().UTC()))
 
 	return smsgateway.ProcessingStateSent, nil
 }
@@ -448,16 +420,30 @@ func (s *Service) failRecipient(
 		return smsgateway.ProcessingStateFailed, err
 	}
 
-	s.webhooksSvc.EmitSmsFailed(webhooks.MessageEvent{
-		MessageID:   message.ID,
-		PhoneNumber: recipient.PhoneNumber,
-		Sender:      "",
-		Recipient:   nil,
-		SimNumber:   message.SimNumber,
-		At:          time.Now().UTC(),
-	}, reason)
+	s.webhooksSvc.EmitSmsFailed(s.messageEvent(message, recipient, time.Now().UTC()), reason)
 
 	return smsgateway.ProcessingStateFailed, nil
+}
+
+// messageEvent builds the webhook input for one recipient of an outgoing
+// message: PhoneNumber is the recipient number and Recipient repeats it, as
+// the client-go contract requires for the outgoing direction. Sender is the
+// device's own number as reported by +CNUM, read from the modem's cached SIM
+// state (no modem traffic); it is empty when the SIM provides no number,
+// which the contract explicitly allows.
+func (s *Service) messageEvent(
+	message *Message,
+	recipient Recipient,
+	at time.Time,
+) webhooks.MessageEvent {
+	return webhooks.MessageEvent{
+		MessageID:   message.ID,
+		PhoneNumber: recipient.PhoneNumber,
+		Sender:      s.modemSvc.SIM().PhoneNumber,
+		Recipient:   lo.ToPtr(recipient.PhoneNumber),
+		SimNumber:   message.SimNumber,
+		At:          at,
+	}
 }
 
 // resolveFinalState derives the message-level state from the recipient
