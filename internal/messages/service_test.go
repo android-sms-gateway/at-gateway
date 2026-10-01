@@ -10,7 +10,9 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
+	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -26,7 +28,7 @@ func newService(t *testing.T) *messages.Service {
 func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Service {
 	t.Helper()
 
-	repo, _ := newRepository(t)
+	repo, bunDB := newRepository(t)
 
 	storageSvc, err := storage.NewService(
 		storage.Config{Path: filepath.Join(t.TempDir(), "storage.json")},
@@ -38,25 +40,25 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 
-	metrics := &messages.Metrics{
-		EnqueuedTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "test_enqueued_total", Help: "Test counter"},
-		),
-		SentTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "test_sent_total", Help: "Test counter"},
-		),
-		DeliveredTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "test_delivered_total", Help: "Test counter"},
-		),
-		FailedTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "test_failed_total", Help: "Test counter"},
-		),
-		CancelledTotal: prometheus.NewCounter(
-			prometheus.CounterOpts{Name: "test_cancelled_total", Help: "Test counter"},
-		),
+	metrics := messages.NewTestMetrics(prometheus.NewRegistry())
+
+	webhooksSvc, err := webhooks.NewService(
+		webhooks.Config{SigningKey: "messages-test-key"},
+		webhooks.NewRepository(bunDB),
+		devicesSvc,
+		storageSvc,
+		nil,
+		zap.NewNop(),
+	)
+	if err != nil {
+		t.Fatalf("create webhooks service: %v", err)
 	}
 
-	return messages.NewService(config, repo, devicesSvc, nil, metrics, zap.NewNop())
+	// The modem service is never run: webhook emission reads only its cached
+	// SIM state, so a disconnected service is enough here.
+	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil)
+
+	return messages.NewService(config, repo, devicesSvc, modemSvc, webhooksSvc, metrics, zap.NewNop())
 }
 
 func newEnqueueInput(extID string, phones ...string) messages.MessageInput {

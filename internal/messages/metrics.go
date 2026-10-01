@@ -7,46 +7,71 @@ import (
 
 // Metrics holds the messages module Prometheus counters.
 type Metrics struct {
-	EnqueuedTotal  prometheus.Counter
-	SentTotal      prometheus.Counter
-	DeliveredTotal prometheus.Counter
-	FailedTotal    prometheus.Counter
-	CancelledTotal prometheus.Counter
+	enqueuedTotal  prometheus.Counter
+	sentTotal      prometheus.Counter
+	deliveredTotal prometheus.Counter
+	failedTotal    prometheus.Counter
+	cancelledTotal prometheus.Counter
 }
 
 // NewMetrics registers and returns the messages metrics. promauto panics on
 // duplicate registration, so tests must build Metrics with plain constructors.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		EnqueuedTotal: promauto.NewCounter(
+		enqueuedTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_messages_enqueued_total",
 				Help: "Total number of messages enqueued",
 			},
 		),
-		SentTotal: promauto.NewCounter(
+		sentTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_messages_sent_total",
 				Help: "Total number of messages sent by the worker",
 			},
 		),
-		DeliveredTotal: promauto.NewCounter(
+		deliveredTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_messages_delivered_total",
 				Help: "Total number of messages confirmed delivered by a status report",
 			},
 		),
-		FailedTotal: promauto.NewCounter(
+		failedTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_messages_failed_total",
 				Help: "Total number of messages that failed to send",
 			},
 		),
-		CancelledTotal: promauto.NewCounter(
+		cancelledTotal: promauto.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_messages_cancelled_total",
 				Help: "Total number of messages cancelled",
 			},
 		),
 	}
+}
+
+// IncEnqueued increments the enqueued message counter.
+func (m *Metrics) IncEnqueued() {
+	m.enqueuedTotal.Inc()
+}
+
+// IncSent increments the sent message counter.
+func (m *Metrics) IncSent() {
+	m.sentTotal.Inc()
+}
+
+// IncDelivered increments the delivered message counter.
+func (m *Metrics) IncDelivered() {
+	m.deliveredTotal.Inc()
+}
+
+// IncFailed increments the failed message counter.
+func (m *Metrics) IncFailed() {
+	m.failedTotal.Inc()
+}
+
+// IncCancelled increments the cancelled message counter.
+func (m *Metrics) IncCancelled() {
+	m.cancelledTotal.Inc()
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/openapi"
 	"github.com/go-core-fx/sqlfx"
@@ -69,6 +70,21 @@ func Module() fx.Option {
 					PollInterval:  cfg.Messages.PollInterval,
 					MaxSegments:   cfg.Messages.MaxSegments,
 					DefaultRegion: cfg.Messages.DefaultRegion,
+				}
+			},
+			func(cfg Config) webhooks.Config {
+				return webhooks.Config{
+					RetryCount: cfg.Webhooks.RetryCount,
+					SigningKey: cfg.Webhooks.SigningKey,
+					Queue: webhooks.QueueConfig{
+						BatchSize:              cfg.Webhooks.Queue.BatchSize,
+						RequestTimeout:         cfg.Webhooks.Queue.RequestTimeout,
+						DialTimeout:            cfg.Webhooks.Queue.DialTimeout,
+						RetryBaseDelay:         cfg.Webhooks.Queue.RetryBaseDelay,
+						IdleDelay:              cfg.Webhooks.Queue.IdleDelay,
+						StuckProcessingTimeout: cfg.Webhooks.Queue.StuckProcessingTimeout,
+						CleanupRetention:       cfg.Webhooks.Queue.CleanupRetention,
+					},
 				}
 			},
 			func(cfg Config) sqlfx.Config {

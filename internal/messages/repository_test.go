@@ -285,6 +285,30 @@ func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
 	}
 }
 
+// TestCancel_AlreadyCancelledIsNotPending pins the atomic cancel contract:
+// only the call that actually transitions the row succeeds, so a repeat
+// cancel of an already-cancelled message reports ErrNotPending instead of
+// returning success a second time.
+func TestCancel_AlreadyCancelledIsNotPending(t *testing.T) {
+	repo, _ := newRepository(t)
+	ctx := context.Background()
+
+	if err := repo.Create(ctx, newInput("m1", "+11111111111")); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := repo.Cancel(ctx, "m1"); err != nil {
+		t.Fatalf("first cancel: %v", err)
+	}
+
+	message, err := repo.Cancel(ctx, "m1")
+	if !errors.Is(err, messages.ErrNotPending) {
+		t.Fatalf("second cancel = %v, %v; want ErrNotPending", message, err)
+	}
+	if message != nil {
+		t.Fatalf("second cancel message = %+v, want nil", message)
+	}
+}
+
 // TestDequeueNextPending_ExpiresValidUntil verifies that a message whose
 // validity window has closed is expired to Failed (with the recipient
 // histories cascaded) instead of being claimed.
@@ -395,6 +419,213 @@ func TestDequeueNextPending_ClaimsDueSchedule(t *testing.T) {
 	}
 	if claimed.ID != "m1" || claimed.State != smsgateway.ProcessingStateProcessed {
 		t.Fatalf("dequeued = %q state %q, want m1 Processed", claimed.ID, claimed.State)
+	}
+}
+
+// countMessageTimeComparison runs a raw DATETIME comparison through Bun's
+// parameter formatter.
+func countMessageTimeComparison(t *testing.T, bunDB *bun.DB, predicate string, value time.Time) int {
+	t.Helper()
+
+	var count int
+	if err := bunDB.NewRaw(
+		"SELECT COUNT(*) FROM messages WHERE "+predicate,
+		value,
+	).Scan(context.Background(), &count); err != nil {
+		t.Fatalf("count %s: %v", predicate, err)
+	}
+
+	return count
+}
+
+func messageMatchesTimeComparison(
+	t *testing.T,
+	bunDB *bun.DB,
+	extID string,
+	predicate string,
+	value time.Time,
+) bool {
+	t.Helper()
+
+	var matched bool
+	if err := bunDB.NewRaw(
+		"SELECT "+predicate+" FROM messages WHERE ext_id = ?",
+		value,
+		extID,
+	).Scan(context.Background(), &matched); err != nil {
+		t.Fatalf("match %s for %s: %v", predicate, extID, err)
+	}
+
+	return matched
+}
+
+// TestDequeueNextPending_ValidUntilBoundary pins the inclusive valid_until
+// comparison used by both expiry updates. The exact value is included, while
+// a value one hour earlier is the only strict-less-than match.
+func TestDequeueNextPending_ValidUntilBoundary(t *testing.T) {
+	repo, bunDB := newRepository(t)
+	ctx := context.Background()
+	boundary := time.Now().UTC().Truncate(time.Microsecond)
+	futureSchedule := time.Now().UTC().Add(2 * time.Hour)
+
+	for _, seed := range []struct {
+		extID string
+		at    time.Time
+	}{
+		{extID: "valid-before", at: boundary.Add(-time.Hour)},
+		{extID: "valid-at", at: boundary},
+		{extID: "valid-after", at: boundary.Add(time.Hour)},
+	} {
+		input := newInput(seed.extID, "+11111111111")
+		at := seed.at
+		input.ValidUntil = &at
+		if seed.extID == "valid-after" {
+			input.ScheduleAt = &futureSchedule
+		}
+		if err := repo.Create(ctx, input); err != nil {
+			t.Fatalf("create %s: %v", seed.extID, err)
+		}
+	}
+
+	if got := countMessageTimeComparison(t, bunDB, "valid_until <= ?", boundary); got != 2 {
+		t.Fatalf("valid_until <= boundary matched %d rows, want 2", got)
+	}
+	if got := countMessageTimeComparison(t, bunDB, "valid_until < ?", boundary); got != 1 {
+		t.Fatalf("valid_until < boundary matched %d rows, want 1", got)
+	}
+	if !messageMatchesTimeComparison(t, bunDB, "valid-at", "valid_until <= ?", boundary) {
+		t.Fatal("valid_until == boundary was not matched by <=")
+	}
+	if messageMatchesTimeComparison(t, bunDB, "valid-at", "valid_until < ?", boundary) {
+		t.Fatal("valid_until == boundary was matched by <")
+	}
+
+	if _, err := repo.DequeueNextPending(ctx); !errors.Is(err, messages.ErrNotFound) {
+		t.Fatalf("dequeue after expiry = %v, want ErrNotFound", err)
+	}
+	for _, extID := range []string{"valid-before", "valid-at"} {
+		got, err := repo.GetByID(ctx, extID)
+		if err != nil {
+			t.Fatalf("load %s: %v", extID, err)
+		}
+		if got.State != smsgateway.ProcessingStateFailed {
+			t.Fatalf("state for %s = %q, want Failed", extID, got.State)
+		}
+	}
+}
+
+// TestDequeueNextPending_ScheduleAtBoundary pins the inclusive schedule_at
+// comparison used by both the outer claim predicate and its nested selector.
+func TestDequeueNextPending_ScheduleAtBoundary(t *testing.T) {
+	repo, bunDB := newRepository(t)
+	ctx := context.Background()
+	boundary := time.Now().UTC().Truncate(time.Microsecond)
+
+	for _, seed := range []struct {
+		extID string
+		at    time.Time
+	}{
+		{extID: "schedule-before", at: boundary.Add(-time.Hour)},
+		{extID: "schedule-at", at: boundary},
+		{extID: "schedule-after", at: boundary.Add(time.Hour)},
+	} {
+		input := newInput(seed.extID, "+11111111111")
+		at := seed.at
+		input.ScheduleAt = &at
+		if err := repo.Create(ctx, input); err != nil {
+			t.Fatalf("create %s: %v", seed.extID, err)
+		}
+	}
+
+	if got := countMessageTimeComparison(t, bunDB, "schedule_at <= ?", boundary); got != 2 {
+		t.Fatalf("schedule_at <= boundary matched %d rows, want 2", got)
+	}
+	if got := countMessageTimeComparison(t, bunDB, "schedule_at < ?", boundary); got != 1 {
+		t.Fatalf("schedule_at < boundary matched %d rows, want 1", got)
+	}
+	if !messageMatchesTimeComparison(t, bunDB, "schedule-at", "schedule_at <= ?", boundary) {
+		t.Fatal("schedule_at == boundary was not matched by <=")
+	}
+	if messageMatchesTimeComparison(t, bunDB, "schedule-at", "schedule_at < ?", boundary) {
+		t.Fatal("schedule_at == boundary was matched by <")
+	}
+
+	for _, wantID := range []string{"schedule-before", "schedule-at"} {
+		claimed, err := repo.DequeueNextPending(ctx)
+		if err != nil {
+			t.Fatalf("dequeue %s: %v", wantID, err)
+		}
+		if claimed.ID != wantID {
+			t.Fatalf("dequeued = %q, want %q", claimed.ID, wantID)
+		}
+		if setErr := repo.SetState(ctx, claimed.ID, smsgateway.ProcessingStateSent); setErr != nil {
+			t.Fatalf("finalize %s: %v", claimed.ID, setErr)
+		}
+	}
+	if _, err := repo.DequeueNextPending(ctx); !errors.Is(err, messages.ErrNotFound) {
+		t.Fatalf("dequeue future schedule = %v, want ErrNotFound", err)
+	}
+}
+
+// TestMessagesSQLiteDefaultTimestamp_RawTimeComparison compares SQLite's
+// CURRENT_TIMESTAMP text with a raw [time.Time] parameter and records both values
+// on failure because their textual forms intentionally differ.
+func TestMessagesSQLiteDefaultTimestamp_RawTimeComparison(t *testing.T) {
+	_, bunDB := newRepository(t)
+	ctx := context.Background()
+	const extID = "sqlite-default-timestamp"
+
+	if _, err := bunDB.ExecContext(
+		ctx,
+		`INSERT INTO messages (ext_id, device_id, content, state)
+		 VALUES (?, ?, ?, ?)`,
+		extID,
+		"device-1",
+		"{}",
+		string(smsgateway.ProcessingStatePending),
+	); err != nil {
+		t.Fatalf("insert default timestamp row: %v", err)
+	}
+
+	var storedType, stored string
+	if err := bunDB.QueryRowContext(
+		ctx,
+		"SELECT typeof(created_at), CAST(created_at AS TEXT) FROM messages WHERE ext_id = ?",
+		extID,
+	).Scan(&storedType, &stored); err != nil {
+		t.Fatalf("read default created_at: %v", err)
+	}
+	if storedType != "text" {
+		t.Fatalf("created_at type = %q, want text", storedType)
+	}
+	parameter, err := time.ParseInLocation("2006-01-02 15:04:05", stored, time.UTC)
+	if err != nil {
+		t.Fatalf("parse default created_at %q: %v", stored, err)
+	}
+	parameterText := bunDB.QueryGen().FormatQuery("?", parameter)
+
+	var inclusive, exclusive bool
+	if compareErr := bunDB.NewRaw(
+		`SELECT created_at <= ?, created_at < ? FROM messages WHERE ext_id = ?`,
+		parameter,
+		parameter,
+		extID,
+	).Scan(ctx, &inclusive, &exclusive); compareErr != nil {
+		t.Fatalf(
+			"compare default created_at %q with parameter %q (%s): %v",
+			stored,
+			parameter,
+			parameterText,
+			compareErr,
+		)
+	}
+	if !inclusive {
+		t.Fatalf("created_at <= raw time failed: stored=%q parameter=%q bun=%q", stored, parameter, parameterText)
+	}
+	// The default is a shorter lexical prefix; Bun's raw time has a fractional
+	// and offset suffix, so SQLite currently reports the default as < too.
+	if !exclusive {
+		t.Fatalf("created_at < raw time changed: stored=%q parameter=%q bun=%q", stored, parameter, parameterText)
 	}
 }
 

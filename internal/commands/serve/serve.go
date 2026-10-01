@@ -12,6 +12,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/server"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/go-core-fx/bunfx"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/goosefx"
@@ -68,6 +69,7 @@ func run(ctx context.Context, version healthfx.Version) error {
 		messages.Module(true),
 		auth.Module(),
 		devices.Module(),
+		webhooks.Module(true),
 		fx.Supply(version),
 
 		fx.Invoke(func(lc fx.Lifecycle, logger *zap.Logger) {
