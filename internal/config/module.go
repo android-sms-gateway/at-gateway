@@ -45,6 +45,10 @@ func Module() fx.Option {
 					BaudRate:       cfg.Modem.BaudRate,
 					InitTimeout:    cfg.Modem.InitTimeout,
 					CommandTimeout: cfg.Modem.CommandTimeout,
+					Cmgd: modem.CmgdConfig{
+						RetryAttempts: cfg.Modem.Cmgd.RetryAttempts,
+						RetryBackoff:  cfg.Modem.Cmgd.RetryBackoff,
+					},
 				}
 			},
 			func(cfg Config) storage.Config {
@@ -70,12 +74,16 @@ func Module() fx.Option {
 					PollInterval:  cfg.Messages.PollInterval,
 					MaxSegments:   cfg.Messages.MaxSegments,
 					DefaultRegion: cfg.Messages.DefaultRegion,
+					Inbound: messages.InboundConfig{
+						ReassemblyTimeout: cfg.Messages.Inbound.ReassemblyTimeout,
+					},
 				}
 			},
 			func(cfg Config) webhooks.Config {
 				return webhooks.Config{
-					RetryCount: cfg.Webhooks.RetryCount,
-					SigningKey: cfg.Webhooks.SigningKey,
+					RetryCount:   cfg.Webhooks.RetryCount,
+					SigningKey:   cfg.Webhooks.SigningKey,
+					PingInterval: cfg.Webhooks.PingInterval,
 					Queue: webhooks.QueueConfig{
 						BatchSize:              cfg.Webhooks.Queue.BatchSize,
 						RequestTimeout:         cfg.Webhooks.Queue.RequestTimeout,

@@ -6,8 +6,9 @@ import (
 	"go.uber.org/fx"
 )
 
-// Module returns the webhooks Fx module. The delivery worker is registered
-// only when withRun is true; T8 supplies the worker implementation.
+// Module returns the webhooks Fx module. The delivery worker and the
+// system:ping ticker are registered only when withRun is true; T8 supplies the
+// worker implementation.
 func Module(withRun bool) fx.Option {
 	opts := []fx.Option{
 		logger.WithNamedLogger("webhooks"),
@@ -17,7 +18,12 @@ func Module(withRun bool) fx.Option {
 	}
 
 	if withRun {
-		opts = append(opts, fx.Invoke(fxutil.RegisterRunnable[*Service]()))
+		opts = append(
+			opts,
+			fx.Invoke(fxutil.RegisterRunnable[*Service]()),
+			fx.Provide(NewPingEmitter),
+			fx.Invoke(fxutil.RegisterRunnable[*PingEmitter]()),
+		)
 	}
 
 	return fx.Module("webhooks", opts...)

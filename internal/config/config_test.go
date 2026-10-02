@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,11 @@ func TestDefaultWebhooks(t *testing.T) {
 	if got := cfg.Webhooks.Queue.BatchSize; got != 20 {
 		t.Errorf("Default().Webhooks.Queue.BatchSize = %d, want 20", got)
 	}
+	// The ping ticker must NOT ship dead: a zero default would make the
+	// system:ping event unobservable without an explicit override.
+	if got := cfg.Webhooks.PingInterval; got != 60*time.Second {
+		t.Errorf("Default().Webhooks.PingInterval = %v, want 60s", got)
+	}
 
 	queue := cfg.Webhooks.Queue
 	durations := []struct {
@@ -136,6 +142,7 @@ func TestNewWebhooksEnvAndFXBinding(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
 	t.Setenv("WEBHOOKS__RETRY_COUNT", "7")
 	t.Setenv("WEBHOOKS__SIGNING_KEY", "abc12345")
+	t.Setenv("WEBHOOKS__PING_INTERVAL", "90s")
 	t.Setenv("WEBHOOKS__QUEUE__BATCH_SIZE", "5")
 	t.Setenv("WEBHOOKS__QUEUE__REQUEST_TIMEOUT", "31s")
 	t.Setenv("WEBHOOKS__QUEUE__DIAL_TIMEOUT", "6s")
@@ -155,6 +162,11 @@ func TestNewWebhooksEnvAndFXBinding(t *testing.T) {
 	queue := got.Queue
 	if queue.BatchSize != 5 {
 		t.Errorf("Queue.BatchSize = %d, want 5", queue.BatchSize)
+	}
+	// The fx binding layer is what makes the key effective, so the assertion
+	// targets the RESOLVED webhooks.Config rather than the raw koanf struct.
+	if got.PingInterval != 90*time.Second {
+		t.Errorf("PingInterval = %v, want 90s (WEBHOOKS__PING_INTERVAL is bound)", got.PingInterval)
 	}
 
 	durations := []struct {
@@ -187,10 +199,16 @@ func TestNewWebhooksEnvZeroValues(t *testing.T) {
 	t.Setenv("WEBHOOKS__QUEUE__IDLE_DELAY", "0s")
 	t.Setenv("WEBHOOKS__QUEUE__STUCK_PROCESSING_TIMEOUT", "0s")
 	t.Setenv("WEBHOOKS__QUEUE__CLEANUP_RETENTION", "0s")
+	t.Setenv("WEBHOOKS__PING_INTERVAL", "0s")
 
 	got := resolveWebhooksConfig(t)
 	if got.RetryCount != 0 || got.SigningKey != "" || got.Queue.BatchSize != 0 {
 		t.Errorf("zero scalar config = %+v, want zero values", got)
+	}
+	// Zero is the documented opt-out of the system:ping ticker and must survive
+	// the binding layer unchanged.
+	if got.PingInterval != 0 {
+		t.Errorf("PingInterval = %v, want 0 (the documented opt-out)", got.PingInterval)
 	}
 	if got.Queue.RequestTimeout != 0 ||
 		got.Queue.DialTimeout != 0 ||
@@ -212,5 +230,57 @@ func TestNewWebhooksRejectsInvalidDuration(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "webhooks.queue.request_timeout") {
 		t.Errorf("config.New() error = %q, want field path", err)
+	}
+}
+
+// TestNewRejectsInvalidPingInterval pins the validation surface of the ping
+// interval: a malformed duration fails startup with the field path, so a typo
+// never silently degrades into a dead ticker.
+func TestNewRejectsInvalidPingInterval(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("WEBHOOKS__PING_INTERVAL", "not-a-duration")
+
+	_, err := config.New()
+	if err == nil {
+		t.Fatal("config.New() error = nil, want invalid duration error")
+	}
+	if !strings.Contains(err.Error(), "webhooks.ping_interval") {
+		t.Errorf("config.New() error = %q, want the field path webhooks.ping_interval", err)
+	}
+}
+
+// TestEnvExampleDocumentsPingIntervalWithDefault pins the operator surface: the
+// .env.example entry exists, carries the built-in default as its VALUE and
+// documents that same default in the comment block above it, so the
+// documentation cannot drift from the code.
+func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
+	const key = "WEBHOOKS__PING_INTERVAL"
+	// The documented spelling is pinned literally (60s, not 1m); the assertion
+	// below compares it to the built-in default SEMANTICALLY, so a drift of
+	// either side fails.
+	const documented = "60s"
+
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+
+	lines := strings.Split(string(raw), "\n")
+	index := lineIndex(t, lines, key+"=")
+	if got := strings.TrimSpace(strings.TrimPrefix(lines[index], key+"=")); got != documented {
+		t.Errorf("%s = %q in .env.example, want %q", key, got, documented)
+	}
+
+	comment := commentBlockAbove(lines, index)
+	if !strings.Contains(comment, "default: "+documented) {
+		t.Errorf("%s comment block does not document (default: %s):\n%s", key, documented, comment)
+	}
+
+	parsed, err := time.ParseDuration(documented)
+	if err != nil {
+		t.Fatalf("parse documented default %q: %v", documented, err)
+	}
+	if want := config.Default().Webhooks.PingInterval; parsed != want {
+		t.Errorf("documented default %q = %v, want the built-in default %v", documented, parsed, want)
 	}
 }
