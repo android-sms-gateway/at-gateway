@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/ping"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"go.uber.org/fx"
 )
@@ -95,11 +96,6 @@ func TestDefaultWebhooks(t *testing.T) {
 	if got := cfg.Webhooks.Queue.BatchSize; got != 20 {
 		t.Errorf("Default().Webhooks.Queue.BatchSize = %d, want 20", got)
 	}
-	// The ping ticker must NOT ship dead: a zero default would make the
-	// system:ping event unobservable without an explicit override.
-	if got := cfg.Webhooks.PingInterval; got != 60*time.Second {
-		t.Errorf("Default().Webhooks.PingInterval = %v, want 60s", got)
-	}
 
 	queue := cfg.Webhooks.Queue
 	durations := []struct {
@@ -121,6 +117,8 @@ func TestDefaultWebhooks(t *testing.T) {
 	}
 }
 
+// resolveWebhooksConfig and resolvePingConfig resolve the per-domain configs
+// through the fx binding layer, i.e. exactly what the running app receives.
 func resolveWebhooksConfig(t *testing.T) webhooks.Config {
 	t.Helper()
 
@@ -138,11 +136,65 @@ func resolveWebhooksConfig(t *testing.T) webhooks.Config {
 	return got
 }
 
+func resolvePingConfig(t *testing.T) ping.Config {
+	t.Helper()
+
+	var got ping.Config
+	app := fx.New(
+		fx.NopLogger,
+		config.Module(),
+		fx.Invoke(func(cfg ping.Config) {
+			got = cfg
+		}),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("resolve ping config: %v", err)
+	}
+	return got
+}
+
+// TestDefaultPing pins the heartbeat default of the ping module: the ticker
+// must NOT ship dead, a zero default would make the system:ping event
+// unobservable without an explicit override.
+func TestDefaultPing(t *testing.T) {
+	cfg := config.Default()
+
+	if got := cfg.Ping.Interval; got != 60*time.Second {
+		t.Errorf("Default().Ping.Interval = %v, want 60s", got)
+	}
+}
+
+// TestNewPingKeyBindsTheInterval pins the env override path of the renamed key:
+// PING__INTERVAL reaches the running app through the fx binding layer.
+func TestNewPingKeyBindsTheInterval(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "90s")
+
+	got := resolvePingConfig(t)
+
+	if got.Interval != 90*time.Second {
+		t.Errorf("PING__INTERVAL bound to %v, want 90s", got.Interval)
+	}
+}
+
+// TestNewPingKeyZeroDisablesEmission pins the documented opt-out through the
+// binding layer: zero must survive unchanged, it is the switch that disables
+// the event entirely.
+func TestNewPingKeyZeroDisablesEmission(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "0s")
+
+	got := resolvePingConfig(t)
+
+	if got.Interval != 0 {
+		t.Errorf("ping.Config.Interval = %v, want 0 (the documented opt-out)", got.Interval)
+	}
+}
+
 func TestNewWebhooksEnvAndFXBinding(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
 	t.Setenv("WEBHOOKS__RETRY_COUNT", "7")
 	t.Setenv("WEBHOOKS__SIGNING_KEY", "abc12345")
-	t.Setenv("WEBHOOKS__PING_INTERVAL", "90s")
 	t.Setenv("WEBHOOKS__QUEUE__BATCH_SIZE", "5")
 	t.Setenv("WEBHOOKS__QUEUE__REQUEST_TIMEOUT", "31s")
 	t.Setenv("WEBHOOKS__QUEUE__DIAL_TIMEOUT", "6s")
@@ -162,11 +214,6 @@ func TestNewWebhooksEnvAndFXBinding(t *testing.T) {
 	queue := got.Queue
 	if queue.BatchSize != 5 {
 		t.Errorf("Queue.BatchSize = %d, want 5", queue.BatchSize)
-	}
-	// The fx binding layer is what makes the key effective, so the assertion
-	// targets the RESOLVED webhooks.Config rather than the raw koanf struct.
-	if got.PingInterval != 90*time.Second {
-		t.Errorf("PingInterval = %v, want 90s (WEBHOOKS__PING_INTERVAL is bound)", got.PingInterval)
 	}
 
 	durations := []struct {
@@ -199,16 +246,10 @@ func TestNewWebhooksEnvZeroValues(t *testing.T) {
 	t.Setenv("WEBHOOKS__QUEUE__IDLE_DELAY", "0s")
 	t.Setenv("WEBHOOKS__QUEUE__STUCK_PROCESSING_TIMEOUT", "0s")
 	t.Setenv("WEBHOOKS__QUEUE__CLEANUP_RETENTION", "0s")
-	t.Setenv("WEBHOOKS__PING_INTERVAL", "0s")
 
 	got := resolveWebhooksConfig(t)
 	if got.RetryCount != 0 || got.SigningKey != "" || got.Queue.BatchSize != 0 {
 		t.Errorf("zero scalar config = %+v, want zero values", got)
-	}
-	// Zero is the documented opt-out of the system:ping ticker and must survive
-	// the binding layer unchanged.
-	if got.PingInterval != 0 {
-		t.Errorf("PingInterval = %v, want 0 (the documented opt-out)", got.PingInterval)
 	}
 	if got.Queue.RequestTimeout != 0 ||
 		got.Queue.DialTimeout != 0 ||
@@ -238,14 +279,14 @@ func TestNewWebhooksRejectsInvalidDuration(t *testing.T) {
 // never silently degrades into a dead ticker.
 func TestNewRejectsInvalidPingInterval(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
-	t.Setenv("WEBHOOKS__PING_INTERVAL", "not-a-duration")
+	t.Setenv("PING__INTERVAL", "not-a-duration")
 
 	_, err := config.New()
 	if err == nil {
 		t.Fatal("config.New() error = nil, want invalid duration error")
 	}
-	if !strings.Contains(err.Error(), "webhooks.ping_interval") {
-		t.Errorf("config.New() error = %q, want the field path webhooks.ping_interval", err)
+	if !strings.Contains(err.Error(), "ping.interval") {
+		t.Errorf("config.New() error = %q, want the field path ping.interval", err)
 	}
 }
 
@@ -254,7 +295,7 @@ func TestNewRejectsInvalidPingInterval(t *testing.T) {
 // documents that same default in the comment block above it, so the
 // documentation cannot drift from the code.
 func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
-	const key = "WEBHOOKS__PING_INTERVAL"
+	const key = "PING__INTERVAL"
 	// The documented spelling is pinned literally (60s, not 1m); the assertion
 	// below compares it to the built-in default SEMANTICALLY, so a drift of
 	// either side fails.
@@ -280,7 +321,7 @@ func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse documented default %q: %v", documented, err)
 	}
-	if want := config.Default().Webhooks.PingInterval; parsed != want {
+	if want := config.Default().Ping.Interval; parsed != want {
 		t.Errorf("documented default %q = %v, want the built-in default %v", documented, parsed, want)
 	}
 }

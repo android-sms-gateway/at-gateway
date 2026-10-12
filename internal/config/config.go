@@ -67,10 +67,13 @@ type messagesInboundConfig struct {
 }
 
 type webhooksConfig struct {
-	RetryCount   int                 `koanf:"retry_count"`
-	SigningKey   string              `koanf:"signing_key"`
-	PingInterval time.Duration       `koanf:"ping_interval"`
-	Queue        webhooksQueueConfig `koanf:"queue"`
+	RetryCount int                 `koanf:"retry_count"`
+	SigningKey string              `koanf:"signing_key"`
+	Queue      webhooksQueueConfig `koanf:"queue"`
+}
+
+type pingConfig struct {
+	Interval time.Duration `koanf:"interval"`
 }
 
 type webhooksQueueConfig struct {
@@ -92,6 +95,7 @@ type Config struct {
 	Database databaseConfig `koanf:"database"`
 	Messages messagesConfig `koanf:"messages"`
 	Webhooks webhooksConfig `koanf:"webhooks"`
+	Ping     pingConfig     `koanf:"ping"`
 }
 
 // Default returns the built-in configuration: a local-only HTTP server, the
@@ -146,9 +150,6 @@ func Default() Config {
 		Webhooks: webhooksConfig{
 			RetryCount: 15,
 			SigningKey: "",
-			// The system:ping heartbeat ships ENABLED: a zero default would make
-			// the event dead on arrival. 0 remains the opt-out.
-			PingInterval: 60 * time.Second,
 			Queue: webhooksQueueConfig{
 				BatchSize:              20,
 				RequestTimeout:         30 * time.Second,
@@ -158,6 +159,11 @@ func Default() Config {
 				StuckProcessingTimeout: 5 * time.Minute,
 				CleanupRetention:       7 * 24 * time.Hour,
 			},
+		},
+		Ping: pingConfig{
+			// The system:ping heartbeat ships ENABLED: a zero default would make
+			// the event dead on arrival. 0 remains the opt-out.
+			Interval: 60 * time.Second,
 		},
 	}
 }

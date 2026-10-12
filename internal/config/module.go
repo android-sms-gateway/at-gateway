@@ -7,6 +7,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/at-gateway/internal/ping"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/go-core-fx/fiberfx"
@@ -81,9 +82,8 @@ func Module() fx.Option {
 			},
 			func(cfg Config) webhooks.Config {
 				return webhooks.Config{
-					RetryCount:   cfg.Webhooks.RetryCount,
-					SigningKey:   cfg.Webhooks.SigningKey,
-					PingInterval: cfg.Webhooks.PingInterval,
+					RetryCount: cfg.Webhooks.RetryCount,
+					SigningKey: cfg.Webhooks.SigningKey,
 					Queue: webhooks.QueueConfig{
 						BatchSize:              cfg.Webhooks.Queue.BatchSize,
 						RequestTimeout:         cfg.Webhooks.Queue.RequestTimeout,
@@ -93,6 +93,11 @@ func Module() fx.Option {
 						StuckProcessingTimeout: cfg.Webhooks.Queue.StuckProcessingTimeout,
 						CleanupRetention:       cfg.Webhooks.Queue.CleanupRetention,
 					},
+				}
+			},
+			func(cfg Config) ping.Config {
+				return ping.Config{
+					Interval: cfg.Ping.Interval,
 				}
 			},
 			func(cfg Config) sqlfx.Config {
