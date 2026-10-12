@@ -3,6 +3,7 @@ package modem
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,11 @@ const effectiveCmdTimeoutFallback = 5 * time.Second
 // signalRefreshDefaultInterval is the default period of the signal-refresh
 // ticker in Run. Zero disables the ticker entirely.
 const signalRefreshDefaultInterval = 60 * time.Second
+
+// storeMemoryDefault is the preferred message storage (+CPMS <mem1>) the
+// gateway falls back to when none is configured. SIM800-class modules default
+// to "SM" (the SIM store).
+const storeMemoryDefault = "SM"
 
 // deliveryReportChannelSize bounds the buffered +CDS delivery-report queue
 // between the modem read loop and the messages worker. A full channel makes
@@ -140,6 +146,27 @@ type Service struct {
 	// is NO config/env key - tests set it in-package.
 	signalRefreshInterval time.Duration
 
+	// storeSweepInterval is the period of the Run ticker that lists the modem
+	// store (AT+CMGL=4) and re-processes every retained entry, so an entry that
+	// was stored but never re-notified (+CMTI is emitted only for NEW messages)
+	// is still delivered and the store cannot fill. Zero disables the sweep;
+	// tests set it in-package.
+	storeSweepInterval time.Duration
+
+	// storeMu guards storeMemories, which the concurrent +CMTI handlers update
+	// (each +CMTI names the store it was stored in) and the Run sweep reads.
+	storeMu sync.Mutex
+	// storeMemories is every store that can retain an entry: the configured
+	// default followed by each store a +CMTI has named, in first-seen order.
+	// The sweep lists ALL of them, so an entry is recovered from the store it
+	// was filed in even after a LATER indication named a different one.
+	//
+	// The list is bounded by construction: a name only enters it through
+	// setStoreMemory, whose callers pass either the configured default or a
+	// +CMTI head already validated by storedMemoryID (ME, SM, MT), and a name
+	// already tracked is not added twice. No eviction policy is needed.
+	storeMemories []string
+
 	// deliveryReports carries decoded +CDS SMS-STATUS-REPORTs from the
 	// modem read loop to consumers. The channel is created ONCE in
 	// NewService and survives reconnects: connect() registers a fresh URC
@@ -201,6 +228,11 @@ type Service struct {
 func NewService(config Config, loger *zap.Logger, metrics *Metrics, webhooksSvc *webhooks.Service) *Service {
 	WarmGSMCharsets()
 
+	storeMemory := config.Store.Memory
+	if storeMemory == "" {
+		storeMemory = storeMemoryDefault
+	}
+
 	return &Service{
 		config: config,
 
@@ -229,6 +261,9 @@ func NewService(config Config, loger *zap.Logger, metrics *Metrics, webhooksSvc 
 		appStartedEmitted: atomic.Bool{},
 
 		signalRefreshInterval: signalRefreshDefaultInterval,
+		storeSweepInterval:    config.Store.SweepInterval,
+		storeMu:               sync.Mutex{},
+		storeMemories:         []string{storeMemory},
 		deliveryReports:       make(chan DeliveryReport, deliveryReportChannelSize),
 		inboundParts:          make(chan InboundPart, inboundChannelSize),
 		inboundSlots:          make(chan struct{}, inboundHandlerLimit),
@@ -297,6 +332,23 @@ func (s *Service) Run(ctx context.Context) error {
 		tickCh = ticker.C
 	}
 
+	// Retained-entry sweep ticker: lists every tracked store (AT+CMGL=4) and
+	// re-processes every entry, so an entry that was stored but never
+	// re-notified - +CMTI is emitted only for NEW messages - cannot sit in the
+	// modem store forever and fill it. A nil channel never fires, so a zero
+	// interval disables the sweep (and its initial pass).
+	var sweepCh <-chan time.Time
+	if s.storeSweepInterval > 0 {
+		sweepTicker := time.NewTicker(s.storeSweepInterval)
+		defer sweepTicker.Stop()
+		sweepCh = sweepTicker.C
+
+		// Recover entries retained by a previous run (or by a refused hand-off)
+		// BEFORE waiting for the first tick: the modem is ready and its store is
+		// authoritative, so anything still readable there was never delivered.
+		s.sweepStore(ctx)
+	}
+
 	// Loop until the ctx is canceled or the modem read loop exits: the
 	// signal-refresh tick must NOT exit Run (ticks repeat periodically; only
 	// the two exit channels terminate the loop).
@@ -312,6 +364,9 @@ func (s *Service) Run(ctx context.Context) error {
 			// reclaimed even when no further inbound traffic arrives. No new
 			// ticker is spent for it.
 			s.sweepChannelFullBudgets(time.Now().UTC())
+			continue
+		case <-sweepCh:
+			s.sweepStore(ctx)
 			continue
 		}
 		break
@@ -601,6 +656,10 @@ func (s *Service) handleCMTI(info []string) {
 		return
 	}
 
+	// Remember the store the modem filed the message in, so the retained-entry
+	// sweep lists the SAME store reads and deletes are issued against.
+	s.setStoreMemory(memory)
+
 	// Non-blocking acquire: the library serialises commands over a single
 	// cmdLoop, so a handler can block in cmdCh for up to CommandTimeout.
 	// A saturated handler set must drop the indication, never the read loop.
@@ -608,7 +667,7 @@ func (s *Service) handleCMTI(info []string) {
 	case s.inboundSlots <- struct{}{}:
 	default:
 		s.logger.Warn("inbound SMS dropped: handler limit reached",
-			zap.Int("memory", memory),
+			zap.String("memory", memory),
 			zap.Int("index", index),
 		)
 		s.metrics.IncInboundPartsDropped(inboundDropHandlerSaturated)
@@ -624,7 +683,7 @@ func (s *Service) handleCMTI(info []string) {
 	s.mu.RUnlock()
 	if commands == nil {
 		s.logger.Warn("inbound SMS dropped: modem commands unavailable",
-			zap.Int("memory", memory),
+			zap.String("memory", memory),
 			zap.Int("index", index),
 		)
 		s.metrics.IncInboundPartsDropped(inboundDropNotConnected)
@@ -632,7 +691,25 @@ func (s *Service) handleCMTI(info []string) {
 		return
 	}
 
-	pduHex, err := commands.ReadStoredMessage(memory, index)
+	s.processStoredEntry(commands, memory, index, false)
+}
+
+// processStoredEntry runs the inbound route for ONE store entry:
+//
+//	AT+CMGR -> decode -> hand off -> AT+CMGD
+//
+// It is shared by the +CMTI handler and the retained-entry sweep (see
+// sweepStore). mem is the store the entry lives in and is selected before every
+// read and delete, so an index that belongs to a store other than the current
+// preferred one is never read from - or deleted from - the wrong slot.
+//
+// deleteUndecodable controls the DECODE-FAILURE policy: the sweep deletes an
+// entry whose PDU cannot be decoded (decode is deterministic, so the slot is
+// dead and would otherwise fill the store), while the +CMTI path keeps it -
+// the entry stays readable for a re-notification and is reclaimed by the sweep
+// if none comes.
+func (s *Service) processStoredEntry(commands *Commands, mem string, index int, deleteUndecodable bool) {
+	pduHex, err := commands.ReadStoredMessage(mem, index)
 	if err != nil {
 		s.logger.Warn("read stored message failed", zap.Error(err))
 		s.metrics.IncInboundPartsDropped(inboundDropReadFailed)
@@ -645,23 +722,139 @@ func (s *Service) handleCMTI(info []string) {
 		s.logger.Warn("inbound SMS dropped: undecodable stored PDU", zap.Error(err))
 		s.metrics.IncInboundPartsDropped(inboundDropDecodeFailed)
 
+		if deleteUndecodable {
+			s.deleteStoredEntry(commands, mem, index, "undecodable")
+		}
+
 		return
 	}
 
 	// A full consumer channel keeps the store entry: deleting it would turn a
 	// recoverable drop into permanent loss, because a deleted entry can never
 	// be re-notified.
-	if s.handOffInboundPart(storedRef{memory: memory, index: index}, part, time.Now()) == inboundHandoffRetry {
+	memID, idErr := storedMemoryID(mem)
+	if idErr != nil {
+		// Unreachable: every caller passes a name parseStoredReference or the
+		// configured default already validated. Be defensive instead of
+		// dropping an otherwise-deliverable part.
+		memID = 0
+	}
+	if s.handOffInboundPart(storedRef{memory: memID, index: index}, part, time.Now()) == inboundHandoffRetry {
 		return
 	}
 
-	if deleteErr := s.deleteStoredMessage(commands, memory, index); deleteErr != nil {
+	s.deleteStoredEntry(commands, mem, index, "delivered")
+}
+
+// deleteStoredEntry deletes one store entry and logs a failure, tagged with the
+// reason the entry is being removed, so the store cannot silently fill. The
+// caller has already decided the entry must go.
+func (s *Service) deleteStoredEntry(commands *Commands, mem string, index int, reason string) {
+	if deleteErr := s.deleteStoredMessage(commands, mem, index); deleteErr != nil {
 		s.logger.Warn("delete stored message failed: the entry stays in the modem store "+
 			"and may be re-notified",
 			zap.Error(deleteErr),
-			zap.Int("memory", memory),
+			zap.String("memory", mem),
 			zap.Int("index", index),
+			zap.String("reason", reason),
 		)
+	}
+}
+
+// setStoreMemory records mem as a store that can retain an entry.
+//
+// The store is ADDED, never REPLACED. A +CMTI names only the store its OWN
+// message landed in, so replacing would drop a previously named store whose
+// entries are still retained - the sweep could then recover only the newest
+// store and an entry left in an older one would never be listed or deleted.
+func (s *Service) setStoreMemory(mem string) {
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+
+	if slices.Contains(s.storeMemories, mem) {
+		return
+	}
+
+	s.storeMemories = append(s.storeMemories, mem)
+}
+
+// trackedStoreMemories returns every store the sweep must list: the configured
+// default plus each store a +CMTI has named. The returned slice is a COPY, so
+// the sweep issues its AT+CMGL calls off the lock while a handler may still add
+// a newly notified store.
+func (s *Service) trackedStoreMemories() []string {
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+
+	if len(s.storeMemories) == 0 {
+		return []string{storeMemoryDefault}
+	}
+
+	return append([]string(nil), s.storeMemories...)
+}
+
+// sweepStore lists EVERY store that can retain an entry (AT+CMGL=4) and
+// re-processes every entry through the SAME route as +CMTI. It is the recovery
+// backstop for entries that were stored but never re-notified: a +CMTI is
+// emitted only when a NEW message arrives, so an entry whose hand-off was
+// refused (or whose read/decode failed) would otherwise sit in the store until
+// the modem's store fills. Entries whose PDU never decodes are deleted here so
+// a dead slot cannot accumulate (see processStoredEntry).
+//
+// It sweeps every TRACKED store, not just the last one a +CMTI named: an entry
+// stays recoverable in the store it was filed in even after a later indication
+// named a different one. Each store is listed with its OWN name, and that name
+// is passed to processStoredEntry, so a read or delete can never target the
+// wrong slot. A store that fails to list is SKIPPED and the pass continues -
+// one unreadable store must not blind the sweep to the others.
+//
+// It runs on the Run goroutine, so it must not block past the command timeout;
+// the per-entry hand-off stays non-blocking.
+func (s *Service) sweepStore(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	s.mu.RLock()
+	commands := s.commands
+	s.mu.RUnlock()
+	if commands == nil {
+		return
+	}
+
+	recovered := false
+
+	for _, mem := range s.trackedStoreMemories() {
+		if ctx.Err() != nil {
+			return
+		}
+
+		indices, err := commands.ListStoredMessages(mem)
+		if err != nil {
+			s.logger.Warn("list stored messages failed", zap.Error(err), zap.String("memory", mem))
+
+			continue
+		}
+
+		if len(indices) == 0 {
+			continue
+		}
+
+		if !recovered {
+			// Count the PASS once, at the moment the first retained entry is
+			// found - i.e. before it is processed, so the counter is never
+			// observably late behind the delete it guards.
+			recovered = true
+
+			s.metrics.IncStoreSweep()
+		}
+
+		for _, index := range indices {
+			if ctx.Err() != nil {
+				return
+			}
+			s.processStoredEntry(commands, mem, index, true)
+		}
 	}
 }
 
@@ -833,13 +1026,14 @@ func (s *Service) forgetChannelFull(ref storedRef) {
 // deleteStoredMessage removes a read store entry with bounded exponential
 // retries (see CmgdConfig). After the last failure the store-command failure
 // counter is incremented and the error is returned; the caller only warns,
-// because the entry remaining in the store is what makes a re-notification
-// possible.
+// because the entry remaining in the store is what makes a re-notification -
+// or a later sweep - possible. The delete command carries the index alone (see
+// Commands.DeleteStoredMessage); mem only names the store to select first.
 //
 // RESIDUAL RISK: a modem that keeps rejecting +CMGD fills its own store. The
 // retries and the counter make the condition observable and alertable, they
 // do not solve it.
-func (s *Service) deleteStoredMessage(commands *Commands, memory, index int) error {
+func (s *Service) deleteStoredMessage(commands *Commands, mem string, index int) error {
 	attempts := max(s.config.Cmgd.RetryAttempts, 1)
 
 	var err error
@@ -847,7 +1041,7 @@ func (s *Service) deleteStoredMessage(commands *Commands, memory, index int) err
 		if attempt > 0 {
 			time.Sleep(s.config.Cmgd.RetryBackoff << (attempt - 1))
 		}
-		if err = commands.DeleteStoredMessage(memory, index); err == nil {
+		if err = commands.DeleteStoredMessage(mem, index); err == nil {
 			return nil
 		}
 	}

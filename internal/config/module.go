@@ -50,6 +50,10 @@ func Module() fx.Option {
 						RetryAttempts: cfg.Modem.Cmgd.RetryAttempts,
 						RetryBackoff:  cfg.Modem.Cmgd.RetryBackoff,
 					},
+					Store: modem.StoreConfig{
+						Memory:        cfg.Modem.Store.Memory,
+						SweepInterval: cfg.Modem.Store.SweepInterval,
+					},
 				}
 			},
 			func(cfg Config) storage.Config {

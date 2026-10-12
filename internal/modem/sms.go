@@ -46,18 +46,25 @@ type Commands struct {
 	// initialized is set by a successful Init and gates the send path:
 	// SendSMS refuses to run against a modem that was never initialized.
 	initialized bool
+	// selectedStore is the preferred message storage last selected with
+	// +CPMS (the <mem1> that +CMGR/+CMGL/+CMGD operate on). It is read and
+	// written only under mu, so the select-then-command sequence in the store
+	// methods is atomic with respect to other commands: the +CMTI memory is
+	// selected once per distinct value and reused until it changes.
+	selectedStore string
 }
 
 // NewCommands creates a new Commands instance bound to the library AT handle.
 // metrics is required (non-nil) for command telemetry.
 func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 	return &Commands{
-		at:           at,
-		metrics:      metrics,
-		encoder:      sms.NewEncoder(sms.AsSubmit),
-		mu:           sync.Mutex{},
-		pendingDrain: false,
-		initialized:  false,
+		at:            at,
+		metrics:       metrics,
+		encoder:       sms.NewEncoder(sms.AsSubmit),
+		mu:            sync.Mutex{},
+		pendingDrain:  false,
+		initialized:   false,
+		selectedStore: "",
 	}
 }
 
@@ -179,7 +186,7 @@ func (c *Commands) GetSimInfo(ctx context.Context) (SimInfo, error) {
 	}
 
 	info.PhoneNumber = c.atGetCNUM(ctx)
-	info.ICCID = c.atGetFirstLine(ctx, "+CCID")
+	info.ICCID = c.atGetCCID(ctx)
 	info.Carrier = c.atGetCOPS(ctx)
 	info.SignalQuality, info.SignalPercent = c.atGetCSQ(ctx)
 	info.NetworkRegistered = c.atGetCREG(ctx)
@@ -245,21 +252,6 @@ func (c *Commands) atGetString(ctx context.Context, cmd string) (string, error) 
 	return "", nil
 }
 
-// atGetFirstLine returns the trimmed first response line of a query command,
-// or "" on error or an empty response.
-func (c *Commands) atGetFirstLine(ctx context.Context, cmd string) string {
-	if ctx.Err() != nil {
-		return ""
-	}
-
-	lines, err := c.exec(queryCommand(cmd))
-	if err != nil || len(lines) == 0 {
-		return ""
-	}
-
-	return strings.TrimSpace(lines[0])
-}
-
 // atGetCNUM extracts the phone number (field 1) from the first +CNUM line.
 func (c *Commands) atGetCNUM(ctx context.Context) string {
 	if ctx.Err() != nil {
@@ -276,6 +268,28 @@ func (c *Commands) atGetCNUM(ctx context.Context) string {
 			if len(parts) >= 2 { //nolint:mnd // CNUM format: name,number,type
 				return strings.Trim(parts[1], "\"")
 			}
+		}
+	}
+
+	return ""
+}
+
+// atGetCCID extracts the ICCID value from the first "+CCID:" line. The SIMCom
+// response carries the identifier after the "+CCID: " prefix, so the raw line
+// is NOT the ICCID: returning the whole line would publish an invalid ICCID in
+// the app:started webhook payload (and the sim_iccid log).
+func (c *Commands) atGetCCID(ctx context.Context) string {
+	if ctx.Err() != nil {
+		return ""
+	}
+
+	lines, err := c.exec(queryCommand("+CCID"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range lines {
+		if _, after, found := strings.Cut(line, "+CCID:"); found {
+			return strings.TrimSpace(after)
 		}
 	}
 
@@ -417,6 +431,12 @@ func (c *Commands) exec(cmd initCommand) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	return c.execLocked(cmd)
+}
+
+// execLocked is exec with mu already held, so a caller can run several
+// commands (e.g. +CPMS select then +CMGR read) as one atomic sequence.
+func (c *Commands) execLocked(cmd initCommand) ([]string, error) {
 	if c.drainLocked() {
 		return nil, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
 	}

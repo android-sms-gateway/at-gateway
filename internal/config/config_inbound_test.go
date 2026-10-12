@@ -69,6 +69,12 @@ func TestDefaultInboundAndCmgd(t *testing.T) {
 	if got := cfg.Modem.CommandTimeout; got != 30*time.Second {
 		t.Errorf("Default().Modem.CommandTimeout = %v, want 30s", got)
 	}
+	if got := cfg.Modem.Store.Memory; got != "SM" {
+		t.Errorf("Default().Modem.Store.Memory = %q, want SM", got)
+	}
+	if got := cfg.Modem.Store.SweepInterval; got != 60*time.Second {
+		t.Errorf("Default().Modem.Store.SweepInterval = %v, want 60s", got)
+	}
 }
 
 // TestNewInboundAndCmgdEnvOverridesAndFXBinding pins that the new knobs are
@@ -80,6 +86,8 @@ func TestNewInboundAndCmgdEnvOverridesAndFXBinding(t *testing.T) {
 	t.Setenv("MESSAGES__INBOUND__REASSEMBLY_TIMEOUT", "90s")
 	t.Setenv("MODEM__CMGD__RETRY_ATTEMPTS", "5")
 	t.Setenv("MODEM__CMGD__RETRY_BACKOFF", "250ms")
+	t.Setenv("MODEM__STORE__MEMORY", "ME")
+	t.Setenv("MODEM__STORE__SWEEP_INTERVAL", "15s")
 
 	messagesCfg := resolveMessagesConfig(t)
 	if got := messagesCfg.Inbound.ReassemblyTimeout; got != 90*time.Second {
@@ -98,6 +106,12 @@ func TestNewInboundAndCmgdEnvOverridesAndFXBinding(t *testing.T) {
 	}
 	if got := modemCfg.CommandTimeout; got != 30*time.Second {
 		t.Errorf("Modem.CommandTimeout = %v, want the untouched default 30s", got)
+	}
+	if got := modemCfg.Store.Memory; got != "ME" {
+		t.Errorf("MODEM__STORE__MEMORY bound to %q, want ME", got)
+	}
+	if got := modemCfg.Store.SweepInterval; got != 15*time.Second {
+		t.Errorf("MODEM__STORE__SWEEP_INTERVAL bound to %v, want 15s", got)
 	}
 }
 
@@ -229,6 +243,45 @@ func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// TestEnvExampleDocumentsStoreKeys pins the operator surface of the preferred
+// store settings: both keys exist in .env.example with values EQUAL to the
+// built-in defaults and are documented in their comment block, so the
+// documentation cannot drift from the code.
+func TestEnvExampleDocumentsStoreKeys(t *testing.T) {
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+
+	memIndex := lineIndex(t, lines, "MODEM__STORE__MEMORY=")
+	if got := strings.TrimSpace(
+		strings.TrimPrefix(lines[memIndex], "MODEM__STORE__MEMORY="),
+	); got != config.Default().Modem.Store.Memory {
+		t.Errorf("MODEM__STORE__MEMORY = %q in .env.example, want %q", got, config.Default().Modem.Store.Memory)
+	}
+
+	const sweepKey = "MODEM__STORE__SWEEP_INTERVAL"
+	// The documented spelling is pinned literally (60s, not 1m); the assertion
+	// below compares it to the built-in default SEMANTICALLY.
+	const documented = "60s"
+	sweepIndex := lineIndex(t, lines, sweepKey+"=")
+	if got := strings.TrimSpace(strings.TrimPrefix(lines[sweepIndex], sweepKey+"=")); got != documented {
+		t.Errorf("%s = %q in .env.example, want %q", sweepKey, got, documented)
+	}
+	if comment := commentBlockAbove(lines, sweepIndex); !strings.Contains(comment, "default: "+documented) {
+		t.Errorf("%s comment block does not document (default: %s):\n%s", sweepKey, documented, comment)
+	}
+
+	parsed, err := time.ParseDuration(documented)
+	if err != nil {
+		t.Fatalf("parse documented default %q: %v", documented, err)
+	}
+	if want := config.Default().Modem.Store.SweepInterval; parsed != want {
+		t.Errorf("documented default %q = %v, want the built-in default %v", documented, parsed, want)
 	}
 }
 

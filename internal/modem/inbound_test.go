@@ -24,12 +24,17 @@ const (
 	// sequence 1/2 - the SAME numeric reference as the 8-bit pair above.
 	inboundConcat16Part1PDU = "00440b919799001032F4000062012021000000100608040042020161f1985c369fd1"
 	inboundConcat16Part2PDU = "00440b919799001032F4000062012021000000100608040042020269f59add76bfe1"
-	// Data SMS with the 8-bit port IEI 0x04 (port 0x0016 = 22), DCS 0x04
+	// Data SMS with the 8-bit port IEI 0x04: destination port 0x16 (22) FIRST,
+	// originator port 0x00 second (3GPP TS 23.040 9.2.3.24.4), DCS 0x04
 	// (8-bit alphabet), payload cafe.
-	inboundPort8PDU = "00440b919799001032F4000462012021000000070404020016cafe"
-	// Data SMS with the 16-bit port IEI 0x05 (port 0x0050 = 80), payload
-	// cafebabe.
-	inboundPort16PDU = "00440b919799001032F4000462012021000000090405020050cafebabe"
+	inboundPort8PDU = "00440b919799001032F4000462012021000000070404021600cafe"
+	// Data SMS with the 16-bit port IEI 0x05: a 4-octet payload of destination
+	// port 0x0050 (80) FIRST then originator port 0x0000 (3GPP TS 23.040
+	// 9.2.3.24.5), payload cafebabe.
+	inboundPort16PDU = "00440b919799001032F40004620120210000000b06050400500000cafebabe"
+	// 8-bit port IEI 0x04 with a non-conformant 4-octet payload: the decoder
+	// must ignore it rather than read an originator octet as the port.
+	inboundPort8BadLenPDU = "00440b919799001032F40004620120210000000906040400160000cafe"
 	// UCS-2 text "привет" (DCS 0x08).
 	inboundUCS2PDU = "00040b919799001032F40008620120210000000c043f04400438043204350442"
 	// Same text, but the TP-SCTS year is 99: an implausible stamp that the
@@ -119,19 +124,30 @@ func TestDecodeInboundSMS_TextFixtures(t *testing.T) {
 	}
 }
 
-// TestDecodeInboundSMS_PortFixtures pins the destination-port extraction for
-// BOTH port IEs: the 8-bit IEI 0x04 (leading data octet 0x00, port in the
-// second) and the 16-bit IEI 0x05. The 8-bit alphabet leaves the payload as
-// raw octets, which is what sms:data-received base64-encodes.
+// TestDecodeInboundSMS_PortFixtures pins the DESTINATION-port extraction for
+// BOTH port IEs: the 8-bit IEI 0x04 (destination port FIRST, originator
+// second) and the 16-bit IEI 0x05 (destination FIRST, originator second). It
+// also pins that a port IE with a non-conformant payload length is IGNORED, so
+// a malformed header falls back to treating the part as non-ported instead of
+// reading an arbitrary octet. The 8-bit alphabet leaves the payload as raw
+// octets, which is what sms:data-received base64-encodes.
 func TestDecodeInboundSMS_PortFixtures(t *testing.T) {
 	tests := []struct {
-		name     string
-		pdu      string
-		wantPort uint16
-		wantData string
+		name       string
+		pdu        string
+		wantPorted bool
+		wantPort   uint16
+		wantData   string
 	}{
-		{name: "8-bit port IE", pdu: inboundPort8PDU, wantPort: 22, wantData: "\xca\xfe"},
-		{name: "16-bit port IE", pdu: inboundPort16PDU, wantPort: 80, wantData: "\xca\xfe\xba\xbe"},
+		{name: "8-bit port IE", pdu: inboundPort8PDU, wantPorted: true, wantPort: 22, wantData: "\xca\xfe"},
+		{name: "16-bit port IE", pdu: inboundPort16PDU, wantPorted: true, wantPort: 80, wantData: "\xca\xfe\xba\xbe"},
+		{
+			name:       "8-bit IE wrong length ignored",
+			pdu:        inboundPort8BadLenPDU,
+			wantPorted: false,
+			wantPort:   0,
+			wantData:   "\xca\xfe",
+		},
 	}
 
 	for _, tt := range tests {
@@ -141,8 +157,8 @@ func TestDecodeInboundSMS_PortFixtures(t *testing.T) {
 				t.Fatalf("DecodeInboundSMS: %v", err)
 			}
 
-			if !part.Ported {
-				t.Error("ported = false, want true for a port-addressed SMS")
+			if part.Ported != tt.wantPorted {
+				t.Errorf("ported = %v, want %v", part.Ported, tt.wantPorted)
 			}
 			if part.Port != tt.wantPort {
 				t.Errorf("port = %d, want %d", part.Port, tt.wantPort)
