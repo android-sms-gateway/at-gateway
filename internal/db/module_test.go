@@ -159,7 +159,9 @@ func TestModule_UpIdempotent(t *testing.T) {
 }
 
 // TestModule_DownRemovesSchema rolls the schema back and asserts the table and
-// both indexes are gone.
+// both indexes are gone. DownTo(0) is used instead of Down because a single
+// Down only pops the newest migration - with the webhooks migration stacked on
+// top of messages, one Down would leave the messages schema behind.
 func TestModule_DownRemovesSchema(t *testing.T) {
 	sqldb, _ := newStartedApp(t)
 
@@ -168,8 +170,8 @@ func TestModule_DownRemovesSchema(t *testing.T) {
 		t.Fatalf("init provider: %v", err)
 	}
 
-	if _, downErr := provider.Down(context.Background()); downErr != nil {
-		t.Fatalf("Down: %v", downErr)
+	if _, downErr := provider.DownTo(context.Background(), 0); downErr != nil {
+		t.Fatalf("DownTo(0): %v", downErr)
 	}
 
 	if got := countObjects(t, sqldb, "table", "messages"); got != 0 {

@@ -1,10 +1,15 @@
 package config_test
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/ping"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
+	"go.uber.org/fx"
 )
 
 func TestDefaultMessages(t *testing.T) {
@@ -76,5 +81,247 @@ func TestNewMessagesEnvVariations(t *testing.T) {
 				t.Errorf("PollInterval = %v, want %v", got, tt.wantPoll)
 			}
 		})
+	}
+}
+
+func TestDefaultWebhooks(t *testing.T) {
+	cfg := config.Default()
+
+	if got := cfg.Webhooks.RetryCount; got != 15 {
+		t.Errorf("Default().Webhooks.RetryCount = %d, want 15", got)
+	}
+	if got := cfg.Webhooks.SigningKey; got != "" {
+		t.Errorf("Default().Webhooks.SigningKey = %q, want empty", got)
+	}
+	if got := cfg.Webhooks.Queue.BatchSize; got != 20 {
+		t.Errorf("Default().Webhooks.Queue.BatchSize = %d, want 20", got)
+	}
+
+	queue := cfg.Webhooks.Queue
+	durations := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{name: "request timeout", got: queue.RequestTimeout, want: 30 * time.Second},
+		{name: "dial timeout", got: queue.DialTimeout, want: 5 * time.Second},
+		{name: "retry base delay", got: queue.RetryBaseDelay, want: 5 * time.Second},
+		{name: "idle delay", got: queue.IdleDelay, want: 5 * time.Second},
+		{name: "stuck processing timeout", got: queue.StuckProcessingTimeout, want: 5 * time.Minute},
+		{name: "cleanup retention", got: queue.CleanupRetention, want: 7 * 24 * time.Hour},
+	}
+	for _, tt := range durations {
+		if tt.got != tt.want {
+			t.Errorf("Default().Webhooks.Queue.%s = %v, want %v", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
+// resolveWebhooksConfig and resolvePingConfig resolve the per-domain configs
+// through the fx binding layer, i.e. exactly what the running app receives.
+func resolveWebhooksConfig(t *testing.T) webhooks.Config {
+	t.Helper()
+
+	var got webhooks.Config
+	app := fx.New(
+		fx.NopLogger,
+		config.Module(),
+		fx.Invoke(func(cfg webhooks.Config) {
+			got = cfg
+		}),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("resolve webhooks config: %v", err)
+	}
+	return got
+}
+
+func resolvePingConfig(t *testing.T) ping.Config {
+	t.Helper()
+
+	var got ping.Config
+	app := fx.New(
+		fx.NopLogger,
+		config.Module(),
+		fx.Invoke(func(cfg ping.Config) {
+			got = cfg
+		}),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("resolve ping config: %v", err)
+	}
+	return got
+}
+
+// TestDefaultPing pins the heartbeat default of the ping module: the ticker
+// must NOT ship dead, a zero default would make the system:ping event
+// unobservable without an explicit override.
+func TestDefaultPing(t *testing.T) {
+	cfg := config.Default()
+
+	if got := cfg.Ping.Interval; got != 60*time.Second {
+		t.Errorf("Default().Ping.Interval = %v, want 60s", got)
+	}
+}
+
+// TestNewPingKeyBindsTheInterval pins the env override path of the renamed key:
+// PING__INTERVAL reaches the running app through the fx binding layer.
+func TestNewPingKeyBindsTheInterval(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "90s")
+
+	got := resolvePingConfig(t)
+
+	if got.Interval != 90*time.Second {
+		t.Errorf("PING__INTERVAL bound to %v, want 90s", got.Interval)
+	}
+}
+
+// TestNewPingKeyZeroDisablesEmission pins the documented opt-out through the
+// binding layer: zero must survive unchanged, it is the switch that disables
+// the event entirely.
+func TestNewPingKeyZeroDisablesEmission(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "0s")
+
+	got := resolvePingConfig(t)
+
+	if got.Interval != 0 {
+		t.Errorf("ping.Config.Interval = %v, want 0 (the documented opt-out)", got.Interval)
+	}
+}
+
+func TestNewWebhooksEnvAndFXBinding(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("WEBHOOKS__RETRY_COUNT", "7")
+	t.Setenv("WEBHOOKS__SIGNING_KEY", "abc12345")
+	t.Setenv("WEBHOOKS__QUEUE__BATCH_SIZE", "5")
+	t.Setenv("WEBHOOKS__QUEUE__REQUEST_TIMEOUT", "31s")
+	t.Setenv("WEBHOOKS__QUEUE__DIAL_TIMEOUT", "6s")
+	t.Setenv("WEBHOOKS__QUEUE__RETRY_BASE_DELAY", "2s")
+	t.Setenv("WEBHOOKS__QUEUE__IDLE_DELAY", "250ms")
+	t.Setenv("WEBHOOKS__QUEUE__STUCK_PROCESSING_TIMEOUT", "10m")
+	t.Setenv("WEBHOOKS__QUEUE__CLEANUP_RETENTION", "168h")
+
+	got := resolveWebhooksConfig(t)
+
+	if got.RetryCount != 7 {
+		t.Errorf("RetryCount = %d, want 7", got.RetryCount)
+	}
+	if got.SigningKey != "abc12345" {
+		t.Errorf("SigningKey = %q, want %q", got.SigningKey, "abc12345")
+	}
+	queue := got.Queue
+	if queue.BatchSize != 5 {
+		t.Errorf("Queue.BatchSize = %d, want 5", queue.BatchSize)
+	}
+
+	durations := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{name: "request timeout", got: queue.RequestTimeout, want: 31 * time.Second},
+		{name: "dial timeout", got: queue.DialTimeout, want: 6 * time.Second},
+		{name: "retry base delay", got: queue.RetryBaseDelay, want: 2 * time.Second},
+		{name: "idle delay", got: queue.IdleDelay, want: 250 * time.Millisecond},
+		{name: "stuck processing timeout", got: queue.StuckProcessingTimeout, want: 10 * time.Minute},
+		{name: "cleanup retention", got: queue.CleanupRetention, want: 7 * 24 * time.Hour},
+	}
+	for _, tt := range durations {
+		if tt.got != tt.want {
+			t.Errorf("Queue.%s = %v, want %v", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
+func TestNewWebhooksEnvZeroValues(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("WEBHOOKS__RETRY_COUNT", "0")
+	t.Setenv("WEBHOOKS__SIGNING_KEY", "")
+	t.Setenv("WEBHOOKS__QUEUE__BATCH_SIZE", "0")
+	t.Setenv("WEBHOOKS__QUEUE__REQUEST_TIMEOUT", "0s")
+	t.Setenv("WEBHOOKS__QUEUE__DIAL_TIMEOUT", "0s")
+	t.Setenv("WEBHOOKS__QUEUE__RETRY_BASE_DELAY", "0s")
+	t.Setenv("WEBHOOKS__QUEUE__IDLE_DELAY", "0s")
+	t.Setenv("WEBHOOKS__QUEUE__STUCK_PROCESSING_TIMEOUT", "0s")
+	t.Setenv("WEBHOOKS__QUEUE__CLEANUP_RETENTION", "0s")
+
+	got := resolveWebhooksConfig(t)
+	if got.RetryCount != 0 || got.SigningKey != "" || got.Queue.BatchSize != 0 {
+		t.Errorf("zero scalar config = %+v, want zero values", got)
+	}
+	if got.Queue.RequestTimeout != 0 ||
+		got.Queue.DialTimeout != 0 ||
+		got.Queue.RetryBaseDelay != 0 ||
+		got.Queue.IdleDelay != 0 ||
+		got.Queue.StuckProcessingTimeout != 0 ||
+		got.Queue.CleanupRetention != 0 {
+		t.Errorf("zero duration config = %+v, want zero values", got.Queue)
+	}
+}
+
+func TestNewWebhooksRejectsInvalidDuration(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("WEBHOOKS__QUEUE__REQUEST_TIMEOUT", "not-a-duration")
+
+	_, err := config.New()
+	if err == nil {
+		t.Fatal("config.New() error = nil, want invalid duration error")
+	}
+	if !strings.Contains(err.Error(), "webhooks.queue.request_timeout") {
+		t.Errorf("config.New() error = %q, want field path", err)
+	}
+}
+
+// TestNewRejectsInvalidPingInterval pins the validation surface of the ping
+// interval: a malformed duration fails startup with the field path, so a typo
+// never silently degrades into a dead ticker.
+func TestNewRejectsInvalidPingInterval(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "not-a-duration")
+
+	_, err := config.New()
+	if err == nil {
+		t.Fatal("config.New() error = nil, want invalid duration error")
+	}
+	if !strings.Contains(err.Error(), "ping.interval") {
+		t.Errorf("config.New() error = %q, want the field path ping.interval", err)
+	}
+}
+
+// TestEnvExampleDocumentsPingIntervalWithDefault pins the operator surface: the
+// .env.example entry exists, carries the built-in default as its VALUE and
+// documents that same default in the comment block above it, so the
+// documentation cannot drift from the code.
+func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
+	const key = "PING__INTERVAL"
+	// The documented spelling is pinned literally (60s, not 1m); the assertion
+	// below compares it to the built-in default SEMANTICALLY, so a drift of
+	// either side fails.
+	const documented = "60s"
+
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+
+	lines := strings.Split(string(raw), "\n")
+	index := lineIndex(t, lines, key+"=")
+	if got := strings.TrimSpace(strings.TrimPrefix(lines[index], key+"=")); got != documented {
+		t.Errorf("%s = %q in .env.example, want %q", key, got, documented)
+	}
+
+	comment := commentBlockAbove(lines, index)
+	if !strings.Contains(comment, "default: "+documented) {
+		t.Errorf("%s comment block does not document (default: %s):\n%s", key, documented, comment)
+	}
+
+	parsed, err := time.ParseDuration(documented)
+	if err != nil {
+		t.Fatalf("parse documented default %q: %v", documented, err)
+	}
+	if want := config.Default().Ping.Interval; parsed != want {
+		t.Errorf("documented default %q = %v, want the built-in default %v", documented, parsed, want)
 	}
 }

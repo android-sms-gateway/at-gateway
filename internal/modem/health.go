@@ -9,11 +9,11 @@ import (
 const healthProviderName = "modem"
 
 type HealthProvider struct {
-	svc *Service
+	modemSvc *Service
 }
 
-func NewHealthProvider(svc *Service) *HealthProvider {
-	return &HealthProvider{svc: svc}
+func NewHealthProvider(modemSvc *Service) *HealthProvider {
+	return &HealthProvider{modemSvc: modemSvc}
 }
 
 func (p *HealthProvider) Name() string {
@@ -25,7 +25,7 @@ func (p *HealthProvider) StartedProbe(_ context.Context) (healthfx.Checks, error
 }
 
 func (p *HealthProvider) ReadyProbe(_ context.Context) (healthfx.Checks, error) {
-	state := p.svc.State()
+	state := p.modemSvc.State()
 	status := healthfx.StatusPass
 	switch state {
 	case StateReady:

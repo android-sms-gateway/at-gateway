@@ -46,18 +46,25 @@ type Commands struct {
 	// initialized is set by a successful Init and gates the send path:
 	// SendSMS refuses to run against a modem that was never initialized.
 	initialized bool
+	// selectedStore is the preferred message storage last selected with
+	// +CPMS (the <mem1> that +CMGR/+CMGL/+CMGD operate on). It is read and
+	// written only under mu, so the select-then-command sequence in the store
+	// methods is atomic with respect to other commands: the +CMTI memory is
+	// selected once per distinct value and reused until it changes.
+	selectedStore string
 }
 
 // NewCommands creates a new Commands instance bound to the library AT handle.
 // metrics is required (non-nil) for command telemetry.
 func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 	return &Commands{
-		at:           at,
-		metrics:      metrics,
-		encoder:      sms.NewEncoder(sms.AsSubmit),
-		mu:           sync.Mutex{},
-		pendingDrain: false,
-		initialized:  false,
+		at:            at,
+		metrics:       metrics,
+		encoder:       sms.NewEncoder(sms.AsSubmit),
+		mu:            sync.Mutex{},
+		pendingDrain:  false,
+		initialized:   false,
+		selectedStore: "",
 	}
 }
 
@@ -73,6 +80,12 @@ func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 // so an in-flight command always runs to its own per-command timeout. ctx is
 // checked BEFORE the first row and BETWEEN rows, so cancellation aborts the
 // sequence at the next row boundary.
+//
+// Every abort counts ONE at_gateway_modem_init_failures_total under the failing
+// ROW's stage (derived from the row tag), because each of them stops connect()
+// before the modem ever becomes ready: no app:started webhook is emitted and
+// the process goes down. The counter is booked here, where the failing row is
+// known, and connect() adds its own port_open stage.
 func (c *Commands) Init(ctx context.Context) error {
 	commands := []initCommand{
 		{cmd: "", display: "AT", tag: "test"},
@@ -86,12 +99,15 @@ func (c *Commands) Init(ctx context.Context) error {
 	for _, cmd := range commands {
 		select {
 		case <-ctx.Done():
+			c.metrics.IncInitFailure(initFailureStage(cmd.tag))
 			return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
+
 		default:
 		}
 
 		lines, err := c.exec(cmd)
 		if err != nil {
+			c.metrics.IncInitFailure(initFailureStage(cmd.tag))
 			return err
 		}
 		if cmd.tag == "SIM PIN" {
@@ -99,6 +115,7 @@ func (c *Commands) Init(ctx context.Context) error {
 				if suffix, ok := strings.CutPrefix(line, "+CPIN:"); ok {
 					status := strings.TrimSpace(suffix)
 					if status != "READY" {
+						c.metrics.IncInitFailure(initFailureStage(cmd.tag))
 						return fmt.Errorf("%s: %s: %w", cmd.tag, status, ErrSIMNotReady)
 					}
 				}
@@ -169,7 +186,7 @@ func (c *Commands) GetSimInfo(ctx context.Context) (SimInfo, error) {
 	}
 
 	info.PhoneNumber = c.atGetCNUM(ctx)
-	info.ICCID = c.atGetFirstLine(ctx, "+CCID")
+	info.ICCID = c.atGetCCID(ctx)
 	info.Carrier = c.atGetCOPS(ctx)
 	info.SignalQuality, info.SignalPercent = c.atGetCSQ(ctx)
 	info.NetworkRegistered = c.atGetCREG(ctx)
@@ -235,21 +252,6 @@ func (c *Commands) atGetString(ctx context.Context, cmd string) (string, error) 
 	return "", nil
 }
 
-// atGetFirstLine returns the trimmed first response line of a query command,
-// or "" on error or an empty response.
-func (c *Commands) atGetFirstLine(ctx context.Context, cmd string) string {
-	if ctx.Err() != nil {
-		return ""
-	}
-
-	lines, err := c.exec(queryCommand(cmd))
-	if err != nil || len(lines) == 0 {
-		return ""
-	}
-
-	return strings.TrimSpace(lines[0])
-}
-
 // atGetCNUM extracts the phone number (field 1) from the first +CNUM line.
 func (c *Commands) atGetCNUM(ctx context.Context) string {
 	if ctx.Err() != nil {
@@ -266,6 +268,28 @@ func (c *Commands) atGetCNUM(ctx context.Context) string {
 			if len(parts) >= 2 { //nolint:mnd // CNUM format: name,number,type
 				return strings.Trim(parts[1], "\"")
 			}
+		}
+	}
+
+	return ""
+}
+
+// atGetCCID extracts the ICCID value from the first "+CCID:" line. The SIMCom
+// response carries the identifier after the "+CCID: " prefix, so the raw line
+// is NOT the ICCID: returning the whole line would publish an invalid ICCID in
+// the app:started webhook payload (and the sim_iccid log).
+func (c *Commands) atGetCCID(ctx context.Context) string {
+	if ctx.Err() != nil {
+		return ""
+	}
+
+	lines, err := c.exec(queryCommand("+CCID"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range lines {
+		if _, after, found := strings.Cut(line, "+CCID:"); found {
+			return strings.TrimSpace(after)
 		}
 	}
 
@@ -407,6 +431,12 @@ func (c *Commands) exec(cmd initCommand) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	return c.execLocked(cmd)
+}
+
+// execLocked is exec with mu already held, so a caller can run several
+// commands (e.g. +CPMS select then +CMGR read) as one atomic sequence.
+func (c *Commands) execLocked(cmd initCommand) ([]string, error) {
 	if c.drainLocked() {
 		return nil, fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
 	}
@@ -569,10 +599,11 @@ func (c *Commands) sendPDU(p tpdu.TPDU) (int, error) {
 
 	// The +CMGS: indication head can leak into this response as an unknown
 	// info line (v0.4.0 indLoop forwards heads after handlers; with CNMI
-	// active a +CMT head may precede our +CMGS line). Match ONLY lines that
-	// actually START with "+CMGS:" via CutPrefix, so a mid-line "+CMGS:"
-	// substring in a leaked head can never be parsed as the reference.
-	for _, line := range lines {
+	// active a +CMT head may precede our +CMGS line). The shared response
+	// helper drops every '+'-prefixed non-response line first; matching then
+	// uses CutPrefix so a mid-line "+CMGS:" substring in a leaked head can
+	// never be parsed as the reference.
+	for _, line := range dropURCHeads(lines, "+CMGS:") {
 		if suffix, ok := strings.CutPrefix(line, "+CMGS:"); ok {
 			mr, perr := strconv.Atoi(strings.TrimSpace(suffix))
 			if perr != nil {

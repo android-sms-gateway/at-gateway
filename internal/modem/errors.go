@@ -24,4 +24,16 @@ var (
 	// errNotStatusReport is returned by DecodeDeliveryReport when the +CDS
 	// PDU body decodes to a TPDU that is not an SMS-STATUS-REPORT.
 	errNotStatusReport = errors.New("unexpected TPDU type")
+
+	// ErrNotSmsDeliver is returned by DecodeInboundSMS when the stored PDU
+	// decodes to a TPDU that is not an SMS-DELIVER.
+	ErrNotSmsDeliver = errors.New("unexpected TPDU type")
+
+	// ErrNotStoredReference is returned when a "+CMTI: <mem>,<index>" head
+	// carries no usable memory name or index.
+	ErrNotStoredReference = errors.New("malformed store reference")
+
+	// errNoStoredMessageLine is returned by ReadStoredMessage when the +CMGR
+	// response carries no parseable PDU body.
+	errNoStoredMessageLine = errors.New("no +CMGR line in response")
 )

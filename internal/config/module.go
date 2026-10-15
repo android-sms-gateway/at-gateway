@@ -7,7 +7,9 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/at-gateway/internal/ping"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
+	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/go-core-fx/fiberfx"
 	"github.com/go-core-fx/fiberfx/openapi"
 	"github.com/go-core-fx/sqlfx"
@@ -44,6 +46,14 @@ func Module() fx.Option {
 					BaudRate:       cfg.Modem.BaudRate,
 					InitTimeout:    cfg.Modem.InitTimeout,
 					CommandTimeout: cfg.Modem.CommandTimeout,
+					Cmgd: modem.CmgdConfig{
+						RetryAttempts: cfg.Modem.Cmgd.RetryAttempts,
+						RetryBackoff:  cfg.Modem.Cmgd.RetryBackoff,
+					},
+					Store: modem.StoreConfig{
+						Memory:        cfg.Modem.Store.Memory,
+						SweepInterval: cfg.Modem.Store.SweepInterval,
+					},
 				}
 			},
 			func(cfg Config) storage.Config {
@@ -69,6 +79,29 @@ func Module() fx.Option {
 					PollInterval:  cfg.Messages.PollInterval,
 					MaxSegments:   cfg.Messages.MaxSegments,
 					DefaultRegion: cfg.Messages.DefaultRegion,
+					Inbound: messages.InboundConfig{
+						ReassemblyTimeout: cfg.Messages.Inbound.ReassemblyTimeout,
+					},
+				}
+			},
+			func(cfg Config) webhooks.Config {
+				return webhooks.Config{
+					RetryCount: cfg.Webhooks.RetryCount,
+					SigningKey: cfg.Webhooks.SigningKey,
+					Queue: webhooks.QueueConfig{
+						BatchSize:              cfg.Webhooks.Queue.BatchSize,
+						RequestTimeout:         cfg.Webhooks.Queue.RequestTimeout,
+						DialTimeout:            cfg.Webhooks.Queue.DialTimeout,
+						RetryBaseDelay:         cfg.Webhooks.Queue.RetryBaseDelay,
+						IdleDelay:              cfg.Webhooks.Queue.IdleDelay,
+						StuckProcessingTimeout: cfg.Webhooks.Queue.StuckProcessingTimeout,
+						CleanupRetention:       cfg.Webhooks.Queue.CleanupRetention,
+					},
+				}
+			},
+			func(cfg Config) ping.Config {
+				return ping.Config{
+					Interval: cfg.Ping.Interval,
 				}
 			},
 			func(cfg Config) sqlfx.Config {

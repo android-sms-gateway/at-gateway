@@ -22,10 +22,22 @@ type openAPIConfig struct {
 }
 
 type modemConfig struct {
-	Port           string        `koanf:"port"`
-	BaudRate       int           `koanf:"baud_rate"`
-	InitTimeout    time.Duration `koanf:"init_timeout"`
-	CommandTimeout time.Duration `koanf:"command_timeout"`
+	Port           string           `koanf:"port"`
+	BaudRate       int              `koanf:"baud_rate"`
+	InitTimeout    time.Duration    `koanf:"init_timeout"`
+	CommandTimeout time.Duration    `koanf:"command_timeout"`
+	Cmgd           modemCmgdConfig  `koanf:"cmgd"`
+	Store          modemStoreConfig `koanf:"store"`
+}
+
+type modemCmgdConfig struct {
+	RetryAttempts int           `koanf:"retry_attempts"`
+	RetryBackoff  time.Duration `koanf:"retry_backoff"`
+}
+
+type modemStoreConfig struct {
+	Memory        string        `koanf:"memory"`
+	SweepInterval time.Duration `koanf:"sweep_interval"`
 }
 
 type storageConfig struct {
@@ -50,9 +62,34 @@ type databaseConfig struct {
 }
 
 type messagesConfig struct {
-	PollInterval  time.Duration `koanf:"poll_interval"`
-	MaxSegments   int           `koanf:"max_segments"`
-	DefaultRegion string        `koanf:"default_region"`
+	PollInterval  time.Duration         `koanf:"poll_interval"`
+	MaxSegments   int                   `koanf:"max_segments"`
+	DefaultRegion string                `koanf:"default_region"`
+	Inbound       messagesInboundConfig `koanf:"inbound"`
+}
+
+type messagesInboundConfig struct {
+	ReassemblyTimeout time.Duration `koanf:"reassembly_timeout"`
+}
+
+type webhooksConfig struct {
+	RetryCount int                 `koanf:"retry_count"`
+	SigningKey string              `koanf:"signing_key"`
+	Queue      webhooksQueueConfig `koanf:"queue"`
+}
+
+type pingConfig struct {
+	Interval time.Duration `koanf:"interval"`
+}
+
+type webhooksQueueConfig struct {
+	BatchSize              int           `koanf:"batch_size"`
+	RequestTimeout         time.Duration `koanf:"request_timeout"`
+	DialTimeout            time.Duration `koanf:"dial_timeout"`
+	RetryBaseDelay         time.Duration `koanf:"retry_base_delay"`
+	IdleDelay              time.Duration `koanf:"idle_delay"`
+	StuckProcessingTimeout time.Duration `koanf:"stuck_processing_timeout"`
+	CleanupRetention       time.Duration `koanf:"cleanup_retention"`
 }
 
 type Config struct {
@@ -63,6 +100,8 @@ type Config struct {
 	Device   deviceConfig   `koanf:"device"`
 	Database databaseConfig `koanf:"database"`
 	Messages messagesConfig `koanf:"messages"`
+	Webhooks webhooksConfig `koanf:"webhooks"`
+	Ping     pingConfig     `koanf:"ping"`
 }
 
 // Default returns the built-in configuration: a local-only HTTP server, the
@@ -86,6 +125,14 @@ func Default() Config {
 			BaudRate:       115200,
 			InitTimeout:    30 * time.Second,
 			CommandTimeout: 30 * time.Second,
+			Cmgd: modemCmgdConfig{
+				RetryAttempts: 3,
+				RetryBackoff:  2 * time.Second,
+			},
+			Store: modemStoreConfig{
+				Memory:        "SM",
+				SweepInterval: 60 * time.Second,
+			},
 		},
 		Storage: storageConfig{
 			Path: "data/storage.json",
@@ -106,6 +153,27 @@ func Default() Config {
 			PollInterval:  time.Second,
 			MaxSegments:   10,
 			DefaultRegion: "RU",
+			Inbound: messagesInboundConfig{
+				ReassemblyTimeout: 5 * time.Minute,
+			},
+		},
+		Webhooks: webhooksConfig{
+			RetryCount: 15,
+			SigningKey: "",
+			Queue: webhooksQueueConfig{
+				BatchSize:              20,
+				RequestTimeout:         30 * time.Second,
+				DialTimeout:            5 * time.Second,
+				RetryBaseDelay:         5 * time.Second,
+				IdleDelay:              5 * time.Second,
+				StuckProcessingTimeout: 5 * time.Minute,
+				CleanupRetention:       7 * 24 * time.Hour,
+			},
+		},
+		Ping: pingConfig{
+			// The system:ping heartbeat ships ENABLED: a zero default would make
+			// the event dead on arrival. 0 remains the opt-out.
+			Interval: 60 * time.Second,
 		},
 	}
 }
