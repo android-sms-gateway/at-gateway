@@ -199,6 +199,8 @@ func webhookQueueColumns(t *testing.T, bunDB *bun.DB) []tableColumn {
 // table and its unique ext_id index exist with the exact column layout
 // (device_id directly after ext_id).
 func TestMigration_CreatesWebhooksSchema(t *testing.T) {
+	t.Parallel()
+
 	_, _, bunDB := newPersistence(t)
 
 	if got := countSchemaObjects(t, bunDB, "table", "webhooks"); got != 1 {
@@ -242,6 +244,8 @@ func TestMigration_CreatesWebhooksSchema(t *testing.T) {
 // TestMigration_CreatesWebhookQueueSchema pins AC1/AC2: the queue table has
 // the Android-compatible column layout, defaults, and both composite indexes.
 func TestMigration_CreatesWebhookQueueSchema(t *testing.T) {
+	t.Parallel()
+
 	_, _, bunDB := newPersistence(t)
 
 	if got := countSchemaObjects(t, bunDB, "table", "webhook_queue"); got != 1 {
@@ -311,6 +315,8 @@ func TestMigration_CreatesWebhookQueueSchema(t *testing.T) {
 // webhooks migration removes the webhooks and queue schema while the messages
 // migration stays applied.
 func TestMigration_DownRemovesWebhooksSchema(t *testing.T) {
+	t.Parallel()
+
 	_, sqldb, bunDB := newPersistence(t)
 	provider := newGooseProvider(t, sqldb)
 	ctx := context.Background()
@@ -341,6 +347,8 @@ func TestMigration_DownRemovesWebhooksSchema(t *testing.T) {
 // TestMigration_DownToMessagesVersion rolls back the webhooks migration,
 // leaving the messages schema intact.
 func TestMigration_DownToMessagesVersion(t *testing.T) {
+	t.Parallel()
+
 	_, sqldb, bunDB := newPersistence(t)
 	provider := newGooseProvider(t, sqldb)
 	ctx := context.Background()
@@ -367,9 +375,10 @@ func TestMigration_DownToMessagesVersion(t *testing.T) {
 // unscoped case persisted as SQL NULL (DeviceID nil).
 func newWebhook(extID, deviceID, url string, event smsgateway.WebhookEvent) webhooks.Webhook {
 	w := webhooks.Webhook{
-		ID:    extID,
-		URL:   url,
-		Event: event,
+		ID:       extID,
+		DeviceID: nil,
+		URL:      url,
+		Event:    event,
 	}
 	if deviceID != "" {
 		w.DeviceID = &deviceID
@@ -463,6 +472,8 @@ func countQueueItems(t *testing.T, bunDB *bun.DB, id string) int {
 // TestSelect_EmptyRegistry verifies an idle registry yields an empty (non-nil)
 // slice instead of an error or nil.
 func TestSelect_EmptyRegistry(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 
 	got, err := repo.Select(context.Background())
@@ -481,6 +492,8 @@ func TestSelect_EmptyRegistry(t *testing.T) {
 // selected back with every field - including device_id - round-tripped
 // exactly, in insertion order, with non-zero timestamps.
 func TestReplaceThenSelect_RoundTrip(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	ctx := context.Background()
 
@@ -518,6 +531,8 @@ func TestReplaceThenSelect_RoundTrip(t *testing.T) {
 // DeviceID nil; upserts clear and restore device_id across NULL/valued
 // transitions on the same ext_id.
 func TestReplaceThenSelect_NullDeviceIDRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 
@@ -578,6 +593,8 @@ func TestReplaceThenSelect_NullDeviceIDRoundTrip(t *testing.T) {
 // mutable fields including device_id, and preserves the original primary key
 // and created_at.
 func TestReplace_UpsertByExtID(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 
@@ -656,6 +673,8 @@ func TestReplace_UpsertByExtID(t *testing.T) {
 // TestSelectByEvent_Filters verifies event filtering across three distinct
 // events and that an event with no rows yields an empty result.
 func TestSelectByEvent_Filters(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	ctx := context.Background()
 
@@ -696,6 +715,8 @@ func TestSelectByEvent_Filters(t *testing.T) {
 // TestDelete_UnknownIDIsNoop verifies AC3 idempotent delete: an unknown ext_id
 // succeeds without touching existing rows.
 func TestDelete_UnknownIDIsNoop(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	ctx := context.Background()
 
@@ -723,6 +744,8 @@ func TestDelete_UnknownIDIsNoop(t *testing.T) {
 // TestDelete_RemovesKnownID verifies the happy-path delete removes exactly the
 // targeted row and is repeatable.
 func TestDelete_RemovesKnownID(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	ctx := context.Background()
 
@@ -756,6 +779,8 @@ func TestDelete_RemovesKnownID(t *testing.T) {
 // the database (no timestamp equality assertions - conversion is exact for
 // the non-time fields).
 func TestWebhookModelRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	now := time.Date(2026, 9, 23, 12, 0, 0, 123456789, time.UTC)
 
 	cases := []webhooks.Webhook{
@@ -786,6 +811,8 @@ func TestWebhookModelRoundTrip(t *testing.T) {
 // TestEnqueue_RoundTripAndDuplicateID covers persistence of all queue fields
 // and the boundary error path for a duplicate primary key.
 func TestEnqueue_RoundTripAndDuplicateID(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	createdAt := time.Date(2026, 9, 22, 10, 0, 0, 123456789, time.UTC)
 	item := newQueueItem(
@@ -820,6 +847,8 @@ func TestEnqueue_RoundTripAndDuplicateID(t *testing.T) {
 // TestDueItems_OrdersFiltersAndLimits covers FIFO ordering, both due statuses,
 // the inclusive next_attempt boundary, a non-due row, and batch limiting.
 func TestDueItems_OrdersFiltersAndLimits(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	now := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
 	createdAt := now.Add(-time.Hour)
@@ -890,6 +919,8 @@ func TestDueItems_OrdersFiltersAndLimits(t *testing.T) {
 
 // TestDueItems_ExactNowIsDue pins the inclusive next_attempt boundary.
 func TestDueItems_ExactNowIsDue(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	ctx := context.Background()
 	now := time.Date(2026, 9, 22, 11, 30, 0, 0, time.UTC)
@@ -917,6 +948,8 @@ func TestDueItems_ExactNowIsDue(t *testing.T) {
 
 // TestCleanup_ExactCutoffIsRetained pins the exclusive created_at cutoff.
 func TestCleanup_ExactCutoffIsRetained(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 	cutoff := time.Date(2026, 9, 22, 15, 30, 0, 0, time.UTC)
@@ -943,6 +976,8 @@ func TestCleanup_ExactCutoffIsRetained(t *testing.T) {
 
 // TestRecoverStuck_ExactThresholdIsRetained pins the strict next_attempt cutoff.
 func TestRecoverStuck_ExactThresholdIsRetained(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 	threshold := time.Date(2026, 9, 22, 14, 30, 0, 0, time.UTC)
@@ -972,6 +1007,8 @@ func TestRecoverStuck_ExactThresholdIsRetained(t *testing.T) {
 // TestDueItems_EmptyAndNonPositiveLimits verifies the empty-result invariant
 // and the batch-size boundary without relying on SQLite LIMIT interpretation.
 func TestDueItems_EmptyAndNonPositiveLimits(t *testing.T) {
+	t.Parallel()
+
 	repo, _, _ := newPersistence(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 
@@ -990,6 +1027,8 @@ func TestDueItems_EmptyAndNonPositiveLimits(t *testing.T) {
 // completed, processing -> failed -> processing -> permanently_failed, retry
 // increments, nullable errors, and idempotent terminal transitions.
 func TestQueueLifecycle_TransitionsAndRetry(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 	createdAt := time.Date(2026, 9, 22, 13, 0, 0, 0, time.UTC)
@@ -1079,6 +1118,8 @@ func TestQueueLifecycle_TransitionsAndRetry(t *testing.T) {
 // TestRecoverStuck_OnlyMovesStaleProcessing proves the stale-threshold boundary
 // and leaves fresh processing plus pending rows untouched.
 func TestRecoverStuck_OnlyMovesStaleProcessing(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 	now := time.Date(2026, 9, 22, 14, 0, 0, 0, time.UTC)
@@ -1150,6 +1191,8 @@ func TestRecoverStuck_OnlyMovesStaleProcessing(t *testing.T) {
 // deletion, the strict cutoff boundary, preservation of retryable rows, and
 // idempotent cleanup.
 func TestCleanup_RemovesOnlyOldTerminalRows(t *testing.T) {
+	t.Parallel()
+
 	repo, _, bunDB := newPersistence(t)
 	ctx := context.Background()
 	cutoff := time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC)
@@ -1251,6 +1294,8 @@ func TestCleanup_RemovesOnlyOldTerminalRows(t *testing.T) {
 // TestQueueItemModelRoundTrip exercises all queue statuses and both nullable
 // error forms without database timestamp round-tripping.
 func TestQueueItemModelRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	createdAt := time.Date(2026, 9, 22, 16, 0, 0, 123456789, time.UTC)
 	firstError := "first"
 	secondError := "second"

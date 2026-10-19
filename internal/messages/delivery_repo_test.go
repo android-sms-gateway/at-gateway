@@ -30,6 +30,8 @@ func sendRecipient(t *testing.T, repo *messages.Repository, extID, phone string,
 // Delivered, the state history is appended and the owning message ext_id is
 // returned.
 func TestSetRecipientDeliveredByRef_Flip(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -71,6 +73,8 @@ func TestSetRecipientDeliveredByRef_Flip(t *testing.T) {
 // rows, or rows enqueued before the feature existed) still accepts the
 // report - the option defaults to true when absent.
 func TestSetRecipientDeliveredByRef_Defaults(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -98,6 +102,8 @@ func TestSetRecipientDeliveredByRef_Defaults(t *testing.T) {
 // report must reference a Sent recipient of a delivery-report-enabled
 // message with a matching phone, and a flip is a one-shot event.
 func TestSetRecipientDeliveredByRef_Guards(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		setup func(t *testing.T, repo *messages.Repository)
@@ -136,6 +142,8 @@ func TestSetRecipientDeliveredByRef_Guards(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			repo, _ := newRepository(t)
 			ctx := context.Background()
 
@@ -152,6 +160,8 @@ func TestSetRecipientDeliveredByRef_Guards(t *testing.T) {
 // a second report for the same reference finds no Sent recipient (it already
 // flipped) and yields ErrNotFound.
 func TestSetRecipientDeliveredByRef_Duplicate(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -171,6 +181,8 @@ func TestSetRecipientDeliveredByRef_Duplicate(t *testing.T) {
 // open recipients sharing one reference (the 8-bit TP-MR wrapped) are
 // resolved by phone, and a phone-less lookup flips the OLDEST one only.
 func TestSetRecipientDeliveredByRef_OldestMatch(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -208,6 +220,8 @@ func TestSetRecipientDeliveredByRef_OldestMatch(t *testing.T) {
 // TestSetRecipientFailedByRef pins the permanent-failure transition: the
 // flipped recipient carries the report reason in its error field.
 func TestSetRecipientFailedByRef(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 

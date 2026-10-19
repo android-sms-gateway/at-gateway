@@ -39,6 +39,8 @@ func exitCode(t *testing.T, err error) int {
 // limited to structural problems. A text exceeding the part cap exits 1 with
 // an actionable message BEFORE any modem wiring.
 func TestSendCommand_ValidationTooManyParts(t *testing.T) {
+	t.Parallel()
+
 	// 1530 ASCII characters = exactly 10 GSM-7 parts (153 chars each); 1531
 	// exceeds the default cap of 10 parts.
 	longText := strings.Repeat("a", 1531)
@@ -82,6 +84,8 @@ func TestSendCommand_MaxPartsFlag(t *testing.T) {
 
 // TestSendCommand_ValidationEmpty pins the empty-text exit path.
 func TestSendCommand_ValidationEmpty(t *testing.T) {
+	t.Parallel()
+
 	err := runSend(t, []string{"send", "-p", "+79990001234", "-t", ""})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -97,6 +101,8 @@ func TestSendCommand_ValidationEmpty(t *testing.T) {
 // TestSendCommand_MissingRequiredFlags pins flag parsing: a missing required
 // flag fails the run with a usage error naming the flag.
 func TestSendCommand_MissingRequiredFlags(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		args []string
@@ -109,6 +115,8 @@ func TestSendCommand_MissingRequiredFlags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := runSend(t, tt.args)
 			if err == nil {
 				t.Fatal("expected error, got nil")

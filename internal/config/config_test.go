@@ -13,6 +13,8 @@ import (
 )
 
 func TestDefaultMessages(t *testing.T) {
+	t.Parallel()
+
 	cfg := config.Default()
 
 	if got := cfg.Messages.PollInterval; got != time.Second {
@@ -85,6 +87,8 @@ func TestNewMessagesEnvVariations(t *testing.T) {
 }
 
 func TestDefaultWebhooks(t *testing.T) {
+	t.Parallel()
+
 	cfg := config.Default()
 
 	if got := cfg.Webhooks.RetryCount; got != 15 {
@@ -157,6 +161,8 @@ func resolvePingConfig(t *testing.T) ping.Config {
 // must NOT ship dead, a zero default would make the system:ping event
 // unobservable without an explicit override.
 func TestDefaultPing(t *testing.T) {
+	t.Parallel()
+
 	cfg := config.Default()
 
 	if got := cfg.Ping.Interval; got != 60*time.Second {
@@ -295,6 +301,8 @@ func TestNewRejectsInvalidPingInterval(t *testing.T) {
 // documents that same default in the comment block above it, so the
 // documentation cannot drift from the code.
 func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
+	t.Parallel()
+
 	const key = "PING__INTERVAL"
 	// The documented spelling is pinned literally (60s, not 1m); the assertion
 	// below compares it to the built-in default SEMANTICALLY, so a drift of

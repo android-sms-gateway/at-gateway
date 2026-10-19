@@ -22,7 +22,11 @@ import (
 // storage-backed devices service and a plain-constructor metrics registry,
 // then returns a *messages.Service ready for Enqueue calls.
 func newService(t *testing.T) *messages.Service {
-	return newServiceWithConfig(t, messages.Config{})
+	return newServiceWithConfig(t, messages.Config{
+		PollInterval:  0,
+		MaxSegments:   0,
+		DefaultRegion: "",
+	})
 }
 
 func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Service {
@@ -43,7 +47,19 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 	metrics := messages.NewTestMetrics(prometheus.NewRegistry())
 
 	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{SigningKey: "messages-test-key"},
+		webhooks.Config{
+			RetryCount: 0,
+			SigningKey: "messages-test-key",
+			Queue: webhooks.QueueConfig{
+				BatchSize:              0,
+				RequestTimeout:         0,
+				DialTimeout:            0,
+				RetryBaseDelay:         0,
+				IdleDelay:              0,
+				StuckProcessingTimeout: 0,
+				CleanupRetention:       0,
+			},
+		},
 		webhooks.NewRepository(bunDB),
 		devicesSvc,
 		storageSvc,
@@ -56,7 +72,25 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 
 	// The modem service is never run: webhook emission reads only its cached
 	// SIM state, so a disconnected service is enough here.
-	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil, webhooksSvc)
+	modemSvc := modem.NewService(
+		modem.Config{
+			Port:           "",
+			BaudRate:       0,
+			InitTimeout:    0,
+			CommandTimeout: 0,
+			Cmgd: modem.CmgdConfig{
+				RetryAttempts: 0,
+				RetryBackoff:  0,
+			},
+			Store: modem.StoreConfig{
+				Memory:        "",
+				SweepInterval: 0,
+			},
+		},
+		zap.NewNop(),
+		nil,
+		webhooksSvc,
+	)
 
 	return messages.NewService(config, repo, devicesSvc, modemSvc, webhooksSvc, metrics, zap.NewNop())
 }
@@ -64,16 +98,29 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 func newEnqueueInput(extID string, phones ...string) messages.MessageInput {
 	return messages.MessageInput{
 		MessageContent: messages.MessageContent{
-			TextContent: &smsgateway.TextMessage{Text: "hello"},
+			TextContent:       &smsgateway.TextMessage{Text: "hello"},
+			DataContent:       nil,
+			MultimediaContent: nil,
+		},
+		MessageOptions: messages.MessageOptions{
+			SimNumber:          nil,
+			WithDeliveryReport: nil,
+			ValidUntil:         nil,
+			ScheduleAt:         nil,
+			Priority:           0,
 		},
 		ExtID:        extID,
+		DeviceID:     nil,
 		PhoneNumbers: phones,
+		IsEncrypted:  false,
 	}
 }
 
 // TestEnqueue_PhoneValidation pins the default E.164 validation and
 // normalization of phone numbers at enqueue time.
 func TestEnqueue_PhoneValidation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		phone string
@@ -86,12 +133,14 @@ func TestEnqueue_PhoneValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc := newService(t)
 
 			msg, err := svc.Enqueue(
 				context.Background(),
 				newEnqueueInput("validate-"+tt.name, tt.phone),
-				messages.EnqueueOptions{},
+				messages.EnqueueOptions{SkipPhoneValidation: false},
 			)
 			if err != nil {
 				t.Fatalf("enqueue message: %v", err)
@@ -108,15 +157,21 @@ func TestEnqueue_PhoneValidation(t *testing.T) {
 // parse national phone numbers: a German mobile in national format is valid
 // under DefaultRegion "DE" but rejected under the default "RU" fallback.
 func TestEnqueue_ConfiguredDefaultRegion(t *testing.T) {
+	t.Parallel()
+
 	const germanMobile = "015123456789"
 	const germanMobileE164 = "+4915123456789"
 
-	svc := newServiceWithConfig(t, messages.Config{DefaultRegion: "DE"})
+	svc := newServiceWithConfig(t, messages.Config{
+		PollInterval:  0,
+		MaxSegments:   0,
+		DefaultRegion: "DE",
+	})
 
 	msg, err := svc.Enqueue(
 		context.Background(),
 		newEnqueueInput("region-de", germanMobile),
-		messages.EnqueueOptions{},
+		messages.EnqueueOptions{SkipPhoneValidation: false},
 	)
 	if err != nil {
 		t.Fatalf("enqueue message with DE region: %v", err)
@@ -130,7 +185,7 @@ func TestEnqueue_ConfiguredDefaultRegion(t *testing.T) {
 	_, err = ruSvc.Enqueue(
 		context.Background(),
 		newEnqueueInput("region-ru", germanMobile),
-		messages.EnqueueOptions{},
+		messages.EnqueueOptions{SkipPhoneValidation: false},
 	)
 	if !errors.Is(err, messages.ErrInvalidPhoneNumbers) {
 		t.Errorf("error = %v, want ErrInvalidPhoneNumbers under the RU fallback", err)
@@ -141,6 +196,8 @@ func TestEnqueue_ConfiguredDefaultRegion(t *testing.T) {
 // surface: errors wrap ErrInvalidPhoneNumbers with the failing row and a
 // server-parity reason, and nothing is persisted.
 func TestEnqueue_PhoneValidationError(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		phones  []string
@@ -170,12 +227,14 @@ func TestEnqueue_PhoneValidationError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc := newService(t)
 
 			_, err := svc.Enqueue(
 				context.Background(),
 				newEnqueueInput("invalid-"+tt.name, tt.phones...),
-				messages.EnqueueOptions{},
+				messages.EnqueueOptions{SkipPhoneValidation: false},
 			)
 			if err == nil {
 				t.Fatal("enqueue message succeeded, want validation error")
@@ -211,6 +270,8 @@ func TestEnqueue_PhoneValidationError(t *testing.T) {
 // TestEnqueue_SkipPhoneValidation verifies that the option stores phone
 // numbers verbatim without validation or normalization.
 func TestEnqueue_SkipPhoneValidation(t *testing.T) {
+	t.Parallel()
+
 	phones := []string{"+74951234567", "abc", "8 999 000-12-34"}
 
 	svc := newService(t)
@@ -234,19 +295,23 @@ func TestEnqueue_SkipPhoneValidation(t *testing.T) {
 // TestEnqueue_EmptyPhoneNumbers verifies that the empty-phone invariant is
 // enforced regardless of the skip option (mirroring the wire DTO tags).
 func TestEnqueue_EmptyPhoneNumbers(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		opts   messages.EnqueueOptions
 		phones []string
 	}{
-		{"no recipients", messages.EnqueueOptions{}, nil},
-		{"empty recipient", messages.EnqueueOptions{}, []string{""}},
+		{"no recipients", messages.EnqueueOptions{SkipPhoneValidation: false}, nil},
+		{"empty recipient", messages.EnqueueOptions{SkipPhoneValidation: false}, []string{""}},
 		{"no recipients with skip", messages.EnqueueOptions{SkipPhoneValidation: true}, nil},
 		{"empty recipient with skip", messages.EnqueueOptions{SkipPhoneValidation: true}, []string{""}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc := newService(t)
 
 			_, err := svc.Enqueue(

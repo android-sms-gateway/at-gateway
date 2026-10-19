@@ -3,6 +3,7 @@ package modem_test
 import (
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +25,20 @@ func budgetBase() time.Time {
 func newBudgetService(t *testing.T) *modem.Service {
 	t.Helper()
 
-	return modem.NewService(modem.Config{}, zap.NewNop(), modem.NewTestMetrics(), nil)
+	return modem.NewService(modem.Config{
+		Port:           "",
+		BaudRate:       0,
+		InitTimeout:    0,
+		CommandTimeout: 0,
+		Cmgd: modem.CmgdConfig{
+			RetryAttempts: 0,
+			RetryBackoff:  0,
+		},
+		Store: modem.StoreConfig{
+			Memory:        "",
+			SweepInterval: 0,
+		},
+	}, zap.NewNop(), modem.NewTestMetrics(), nil)
 }
 
 // TestChannelFullBudget_ExhaustedEntryIsRemovedAndFreesTheMap pins the
@@ -34,6 +48,8 @@ func newBudgetService(t *testing.T) *modem.Service {
 // reference past the cap - which used to make a brand new reference final on
 // its FIRST drop, quietly degrading the 3-attempt bound for good entries.
 func TestChannelFullBudget_ExhaustedEntryIsRemovedAndFreesTheMap(t *testing.T) {
+	t.Parallel()
+
 	service := newBudgetService(t)
 	limit := modem.ChannelFullBudgetCap()
 	retries := modem.ChannelFullRetries()
@@ -71,6 +87,8 @@ func TestChannelFullBudget_ExhaustedEntryIsRemovedAndFreesTheMap(t *testing.T) {
 // attempt left, so a pure counter would make the new message final on its first
 // drop.
 func TestChannelFullBudget_ReusedStoreSlotStartsFreshAfterTheWindow(t *testing.T) {
+	t.Parallel()
+
 	service := newBudgetService(t)
 	retries := modem.ChannelFullRetries()
 
@@ -112,6 +130,8 @@ func TestChannelFullBudget_ReusedStoreSlotStartsFreshAfterTheWindow(t *testing.T
 // count past the cap, and the cap costs the OLDEST reference its budget instead
 // of leaving a new one untracked (which was the order-dependence).
 func TestChannelFullBudget_CapEvictsTheOldestUnderAFlood(t *testing.T) {
+	t.Parallel()
+
 	service := newBudgetService(t)
 	limit := modem.ChannelFullBudgetCap()
 	flood := 3 * limit
@@ -143,6 +163,8 @@ func TestChannelFullBudget_CapEvictsTheOldestUnderAFlood(t *testing.T) {
 // failure must leave the map, otherwise it is logically absent but physically
 // present and no real opportunity ever reclaims it.
 func TestChannelFullBudget_WindowElapsedEntryIsPhysicallyRemoved(t *testing.T) {
+	t.Parallel()
+
 	service := newBudgetService(t)
 	base := budgetBase()
 
@@ -180,7 +202,22 @@ func TestChannelFullBudget_WindowElapsedEntryIsPhysicallyRemoved(t *testing.T) {
 // further inbound traffic ever arrives, so a stale entry cannot sit in the map
 // until an unrelated failure happens to come along.
 func TestChannelFullBudget_RunTickReclaimsWithoutAnyTraffic(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, _, _ := newInboundServiceWithTick(t, inboundServiceConfig(), scripted, 25*time.Millisecond)
 
 	// Book one budget whose window has ALREADY elapsed on the real clock the Run
@@ -205,6 +242,8 @@ func TestChannelFullBudget_RunTickReclaimsWithoutAnyTraffic(t *testing.T) {
 // ORDER at the cap: the expired budgets are reclaimed first, and a live budget is
 // only sacrificed when reclaiming them was not enough to make room.
 func TestChannelFullBudget_CapEvictsExpiredBeforeTheOldestLive(t *testing.T) {
+	t.Parallel()
+
 	service := newBudgetService(t)
 	limit := modem.ChannelFullBudgetCap()
 	window := modem.ChannelFullBudgetWindow()
@@ -252,7 +291,22 @@ func TestChannelFullBudget_CapEvictsExpiredBeforeTheOldestLive(t *testing.T) {
 // leaves no entry behind: the budget of its store slot must not outlive it and
 // leak into a later message in the same slot.
 func TestChannelFullBudget_DeliveredPartLeavesNoBudget(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 	fillInboundChannel(t, service, scratch, scripted)
 
@@ -286,6 +340,8 @@ func TestChannelFullBudget_DeliveredPartLeavesNoBudget(t *testing.T) {
 // FINAL one, and the final one must name the tracking-map eviction - it is no
 // longer only a message that spent all of its own attempts.
 func TestInboundPartsDroppedHelpNamesTheChannelFullOutcomes(t *testing.T) {
+	t.Parallel()
+
 	help := productionMetricHelp(t, "at_gateway_modem_inbound_parts_dropped_total")
 
 	for _, want := range []string{

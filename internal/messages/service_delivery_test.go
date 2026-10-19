@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +26,15 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
+
+// TestMain warms the GSM-7 charset tables on this single goroutine before any
+// test runs: modem.NewService calls WarmGSMCharsets, the upstream library
+// builds those tables lazily without synchronization, and the parallel tests
+// in this package construct services concurrently.
+func TestMain(m *testing.M) {
+	modem.WarmGSMCharsets()
+	os.Exit(m.Run())
+}
 
 // newWhiteboxService builds the persistence graph (same stack as
 // newRepository in repository_test.go, which lives in the external test
@@ -79,7 +89,19 @@ func newWhiteboxService(t *testing.T) (*Service, *Repository, *bun.DB, *webhooks
 	}
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{SigningKey: "messages-delivery-test-key"},
+		webhooks.Config{
+			RetryCount: 0,
+			SigningKey: "messages-delivery-test-key",
+			Queue: webhooks.QueueConfig{
+				BatchSize:              0,
+				RequestTimeout:         0,
+				DialTimeout:            0,
+				RetryBaseDelay:         0,
+				IdleDelay:              0,
+				StuckProcessingTimeout: 0,
+				CleanupRetention:       0,
+			},
+		},
 		webhooks.NewRepository(bunDB),
 		devicesSvc,
 		storageSvc,
@@ -112,10 +134,23 @@ func newWhiteboxService(t *testing.T) (*Service, *Repository, *bun.DB, *webhooks
 	// still serves cached-SIM reads (empty phone number), which is exactly the
 	// degraded Sender the webhook contract permits. Nil metrics is safe here -
 	// no modem code path runs.
-	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil, webhooksSvc)
+	modemSvc := modem.NewService(modem.Config{
+		Port:           "",
+		BaudRate:       0,
+		InitTimeout:    0,
+		CommandTimeout: 0,
+		Cmgd: modem.CmgdConfig{
+			RetryAttempts: 0,
+			RetryBackoff:  0,
+		},
+		Store: modem.StoreConfig{
+			Memory:        "",
+			SweepInterval: 0,
+		},
+	}, zap.NewNop(), nil, webhooksSvc)
 
 	return NewService(
-		Config{},
+		Config{PollInterval: 0, MaxSegments: 0, DefaultRegion: ""},
 		repo,
 		devicesSvc,
 		modemSvc,
@@ -141,14 +176,21 @@ func whiteboxEnqueueAndSend(
 	deviceID := "device-1"
 	input := &MessageInput{
 		MessageContent: MessageContent{
-			TextContent: &smsgateway.TextMessage{Text: "hello"},
+			TextContent:       &smsgateway.TextMessage{Text: "hello"},
+			DataContent:       nil,
+			MultimediaContent: nil,
 		},
 		MessageOptions: MessageOptions{
+			SimNumber:          nil,
 			WithDeliveryReport: &withDeliveryReport,
+			ValidUntil:         nil,
+			ScheduleAt:         nil,
+			Priority:           0,
 		},
 		ExtID:        extID,
 		DeviceID:     &deviceID,
 		PhoneNumbers: phones,
+		IsEncrypted:  false,
 	}
 	if err := repo.Create(ctx, input); err != nil {
 		t.Fatalf("create message: %v", err)
@@ -179,12 +221,23 @@ func whiteboxEnqueue(
 		context.Background(),
 		MessageInput{
 			MessageContent: MessageContent{
-				TextContent: &smsgateway.TextMessage{Text: "hello"},
+				TextContent:       &smsgateway.TextMessage{Text: "hello"},
+				DataContent:       nil,
+				MultimediaContent: nil,
+			},
+			MessageOptions: MessageOptions{
+				SimNumber:          nil,
+				WithDeliveryReport: nil,
+				ValidUntil:         nil,
+				ScheduleAt:         nil,
+				Priority:           0,
 			},
 			ExtID:        extID,
+			DeviceID:     nil,
 			PhoneNumbers: phones,
+			IsEncrypted:  false,
 		},
-		EnqueueOptions{},
+		EnqueueOptions{SkipPhoneValidation: false},
 	)
 	if err != nil {
 		t.Fatalf("enqueue message: %v", err)
@@ -289,6 +342,7 @@ func requireOnlyQueuePayload(t *testing.T, bunDB *bun.DB, target any) queuedWebh
 }
 
 func TestProcessPending_FailedEmitsWebhookForEveryFailurePath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		input          MessageInput
@@ -298,15 +352,44 @@ func TestProcessPending_FailedEmitsWebhookForEveryFailurePath(t *testing.T) {
 		{
 			name: "unsupported content",
 			input: MessageInput{MessageContent: MessageContent{
-				DataContent: &smsgateway.DataMessage{Data: "aGVsbG8=", Port: 53739},
-			}},
+				DataContent:       &smsgateway.DataMessage{Data: "aGVsbG8=", Port: 53739},
+				TextContent:       nil,
+				MultimediaContent: nil,
+			},
+				MessageOptions: MessageOptions{
+					SimNumber:          nil,
+					WithDeliveryReport: nil,
+					ValidUntil:         nil,
+					ScheduleAt:         nil,
+					Priority:           0,
+				},
+				ExtID:        "",
+				DeviceID:     nil,
+				PhoneNumbers: nil,
+				IsEncrypted:  false,
+			},
+			maxSegments:    0,
 			wantReasonText: "only text messages are supported",
 		},
 		{
 			name: "segment cap exceeded",
 			input: MessageInput{MessageContent: MessageContent{
-				TextContent: &smsgateway.TextMessage{Text: strings.Repeat("a", 161)},
-			}},
+				TextContent:       &smsgateway.TextMessage{Text: strings.Repeat("a", 161)},
+				DataContent:       nil,
+				MultimediaContent: nil,
+			},
+				MessageOptions: MessageOptions{
+					SimNumber:          nil,
+					WithDeliveryReport: nil,
+					ValidUntil:         nil,
+					ScheduleAt:         nil,
+					Priority:           0,
+				},
+				ExtID:        "",
+				DeviceID:     nil,
+				PhoneNumbers: nil,
+				IsEncrypted:  false,
+			},
 			maxSegments:    1,
 			wantReasonText: "maximum is 1",
 		},
@@ -314,6 +397,7 @@ func TestProcessPending_FailedEmitsWebhookForEveryFailurePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			svc, _, bunDB, webhooksSvc := newWhiteboxService(t)
 			registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsFailed)
 			svc.config.MaxSegments = tt.maxSegments
@@ -321,7 +405,7 @@ func TestProcessPending_FailedEmitsWebhookForEveryFailurePath(t *testing.T) {
 			input := tt.input
 			input.ExtID = "failed-" + strings.ReplaceAll(tt.name, " ", "-")
 			input.PhoneNumbers = []string{"+79990001234"}
-			message, err := svc.Enqueue(context.Background(), input, EnqueueOptions{})
+			message, err := svc.Enqueue(context.Background(), input, EnqueueOptions{SkipPhoneValidation: false})
 			if err != nil {
 				t.Fatalf("enqueue message: %v", err)
 			}
@@ -349,6 +433,7 @@ func TestProcessPending_FailedEmitsWebhookForEveryFailurePath(t *testing.T) {
 }
 
 func TestCancel_EmitsWebhookForEachCancelledRecipient(t *testing.T) {
+	t.Parallel()
 	svc, repo, bunDB, webhooksSvc := newWhiteboxService(t)
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsCancelled)
 
@@ -386,6 +471,7 @@ func TestCancel_EmitsWebhookForEachCancelledRecipient(t *testing.T) {
 // answers ErrNotPending (mapped to 409 by the handler) and leaves the
 // webhook queue untouched.
 func TestCancel_SecondCancelIsRejectedAndDoesNotReEmit(t *testing.T) {
+	t.Parallel()
 	svc, _, bunDB, webhooksSvc := newWhiteboxService(t)
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsCancelled)
 
@@ -409,6 +495,7 @@ func TestCancel_SecondCancelIsRejectedAndDoesNotReEmit(t *testing.T) {
 // statuses deliver, temporary errors are ignored (the SC retries) and
 // permanent errors fail with the status as the reason.
 func TestDeliveryReportState(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		status  byte
@@ -427,6 +514,7 @@ func TestDeliveryReportState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			state, reason, handled := deliveryReportState(tt.status)
 			if handled != tt.handled {
 				t.Fatalf("handled = %v, want %v", handled, tt.handled)
@@ -445,6 +533,7 @@ func TestDeliveryReportState(t *testing.T) {
 // delivered report flips the matching recipient, promotes the message to
 // Delivered and bumps the delivered counter.
 func TestHandleDeliveryReport_Delivered(t *testing.T) {
+	t.Parallel()
 	svc, repo, bunDB, webhooksSvc := newWhiteboxService(t)
 	ctx := context.Background()
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsDelivered)
@@ -489,6 +578,7 @@ func TestHandleDeliveryReport_Delivered(t *testing.T) {
 // permanent status fails the recipient with the SC status as the reason and
 // promotes the all-terminal message to Failed.
 func TestHandleDeliveryReport_PermanentFailure(t *testing.T) {
+	t.Parallel()
 	svc, repo, bunDB, webhooksSvc := newWhiteboxService(t)
 	ctx := context.Background()
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsFailed)
@@ -539,6 +629,7 @@ func TestHandleDeliveryReport_PermanentFailure(t *testing.T) {
 // 0x30 status leaves the recipient Sent, the message Sent and the counters
 // untouched - the SC reports progress on its own retries.
 func TestHandleDeliveryReport_TemporaryIgnored(t *testing.T) {
+	t.Parallel()
 	svc, repo, bunDB, webhooksSvc := newWhiteboxService(t)
 	ctx := context.Background()
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsDelivered)
@@ -572,6 +663,7 @@ func TestHandleDeliveryReport_TemporaryIgnored(t *testing.T) {
 // TestHandleDeliveryReport_UnknownReport pins the no-match rule: a report
 // for a reference no Sent recipient owns (opt-out message) is ignored.
 func TestHandleDeliveryReport_UnknownReport(t *testing.T) {
+	t.Parallel()
 	svc, repo, bunDB, webhooksSvc := newWhiteboxService(t)
 	ctx := context.Background()
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsDelivered)
@@ -597,6 +689,7 @@ func TestHandleDeliveryReport_UnknownReport(t *testing.T) {
 }
 
 func TestHandleDeliveryReport_PersistenceFailureDoesNotEmitWebhook(t *testing.T) {
+	t.Parallel()
 	svc, repo, bunDB, webhooksSvc := newWhiteboxService(t)
 	ctx := context.Background()
 	registerWhiteboxWebhook(t, webhooksSvc, smsgateway.WebhookEventSmsDelivered)
@@ -615,6 +708,7 @@ func TestHandleDeliveryReport_PersistenceFailureDoesNotEmitWebhook(t *testing.T)
 // recipients: the message only becomes Delivered after the LAST outstanding
 // recipient delivers; a partial report keeps it Sent.
 func TestHandleDeliveryReport_AllRecipients(t *testing.T) {
+	t.Parallel()
 	svc, repo, _, _ := newWhiteboxService(t)
 	ctx := context.Background()
 
@@ -655,6 +749,7 @@ func TestHandleDeliveryReport_AllRecipients(t *testing.T) {
 // delivers later - the message stays Sent, exactly what resolveFinalState
 // yields for a mixed outcome.
 func TestHandleDeliveryReport_MixedOutcome(t *testing.T) {
+	t.Parallel()
 	svc, repo, _, _ := newWhiteboxService(t)
 	ctx := context.Background()
 
@@ -684,6 +779,7 @@ func TestHandleDeliveryReport_MixedOutcome(t *testing.T) {
 // and the send path forwards the resolved default. The latter is pinned by
 // the modem layer; here the report path is exercised through the service.
 func TestDeliveryReportDefaults(t *testing.T) {
+	t.Parallel()
 	svc, repo, _, _ := newWhiteboxService(t)
 	ctx := context.Background()
 
@@ -693,11 +789,21 @@ func TestDeliveryReportDefaults(t *testing.T) {
 	deviceID := "device-1"
 	input := &MessageInput{
 		MessageContent: MessageContent{
-			TextContent: &smsgateway.TextMessage{Text: "hello"},
+			TextContent:       &smsgateway.TextMessage{Text: "hello"},
+			DataContent:       nil,
+			MultimediaContent: nil,
+		},
+		MessageOptions: MessageOptions{
+			SimNumber:          nil,
+			WithDeliveryReport: nil,
+			ValidUntil:         nil,
+			ScheduleAt:         nil,
+			Priority:           0,
 		},
 		ExtID:        extID,
 		DeviceID:     &deviceID,
 		PhoneNumbers: []string{phone},
+		IsEncrypted:  false,
 	}
 	if err := repo.Create(ctx, input); err != nil {
 		t.Fatalf("create message: %v", err)

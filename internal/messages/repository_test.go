@@ -65,17 +65,29 @@ func newInput(extID string, phones ...string) *messages.MessageInput {
 	deviceID := "device-1"
 	return &messages.MessageInput{
 		MessageContent: messages.MessageContent{
-			TextContent: &smsgateway.TextMessage{Text: "hello"},
+			TextContent:       &smsgateway.TextMessage{Text: "hello"},
+			DataContent:       nil,
+			MultimediaContent: nil,
+		},
+		MessageOptions: messages.MessageOptions{
+			SimNumber:          nil,
+			WithDeliveryReport: nil,
+			ValidUntil:         nil,
+			ScheduleAt:         nil,
+			Priority:           0,
 		},
 		ExtID:        extID,
 		DeviceID:     &deviceID,
 		PhoneNumbers: phones,
+		IsEncrypted:  false,
 	}
 }
 
 // TestDequeueNextPending_EmptyQueue verifies that an idle queue yields
 // ErrNotFound instead of a phantom message.
 func TestDequeueNextPending_EmptyQueue(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -90,6 +102,8 @@ func TestDequeueNextPending_EmptyQueue(t *testing.T) {
 // history) and the returned message carries its recipients in insertion
 // order.
 func TestDequeueNextPending_FIFO(t *testing.T) {
+	t.Parallel()
+
 	repo, bunDB := newRepository(t)
 	ctx := context.Background()
 
@@ -169,6 +183,8 @@ func TestDequeueNextPending_FIFO(t *testing.T) {
 // before newer Pending messages, so interrupted processing resumes in FIFO
 // order.
 func TestDequeueNextPending_ReclaimsInterrupted(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -197,6 +213,8 @@ func TestDequeueNextPending_ReclaimsInterrupted(t *testing.T) {
 // by the processing loop: Pending -> Processed (once) -> Sent with ref_id,
 // with later transitions guarded out.
 func TestRecipientStateTransitions(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -258,6 +276,8 @@ func TestRecipientStateTransitions(t *testing.T) {
 // TestDequeueNextPending_SkipsFinalized verifies that terminal messages are
 // never claimed and that Cancel cascades the Cancelled state onto recipients.
 func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -290,6 +310,8 @@ func TestDequeueNextPending_SkipsFinalized(t *testing.T) {
 // cancel of an already-cancelled message reports ErrNotPending instead of
 // returning success a second time.
 func TestCancel_AlreadyCancelledIsNotPending(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -313,6 +335,8 @@ func TestCancel_AlreadyCancelledIsNotPending(t *testing.T) {
 // validity window has closed is expired to Failed (with the recipient
 // histories cascaded) instead of being claimed.
 func TestDequeueNextPending_ExpiresValidUntil(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -344,6 +368,8 @@ func TestDequeueNextPending_ExpiresValidUntil(t *testing.T) {
 // removes only expired messages: a healthy Pending message is still claimed
 // in the same pass.
 func TestDequeueNextPending_ExpiryLeavesPendingClaimable(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -376,6 +402,8 @@ func TestDequeueNextPending_ExpiryLeavesPendingClaimable(t *testing.T) {
 // TestDequeueNextPending_SkipsFutureSchedule verifies that a message scheduled
 // in the future stays Pending and is not claimed.
 func TestDequeueNextPending_SkipsFutureSchedule(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -403,6 +431,8 @@ func TestDequeueNextPending_SkipsFutureSchedule(t *testing.T) {
 // TestDequeueNextPending_ClaimsDueSchedule verifies that a scheduled message
 // whose time has arrived is claimed like any other.
 func TestDequeueNextPending_ClaimsDueSchedule(t *testing.T) {
+	t.Parallel()
+
 	repo, _ := newRepository(t)
 	ctx := context.Background()
 
@@ -463,6 +493,8 @@ func messageMatchesTimeComparison(
 // comparison used by both expiry updates. The exact value is included, while
 // a value one hour earlier is the only strict-less-than match.
 func TestDequeueNextPending_ValidUntilBoundary(t *testing.T) {
+	t.Parallel()
+
 	repo, bunDB := newRepository(t)
 	ctx := context.Background()
 	boundary := time.Now().UTC().Truncate(time.Microsecond)
@@ -517,6 +549,8 @@ func TestDequeueNextPending_ValidUntilBoundary(t *testing.T) {
 // TestDequeueNextPending_ScheduleAtBoundary pins the inclusive schedule_at
 // comparison used by both the outer claim predicate and its nested selector.
 func TestDequeueNextPending_ScheduleAtBoundary(t *testing.T) {
+	t.Parallel()
+
 	repo, bunDB := newRepository(t)
 	ctx := context.Background()
 	boundary := time.Now().UTC().Truncate(time.Microsecond)
@@ -571,6 +605,8 @@ func TestDequeueNextPending_ScheduleAtBoundary(t *testing.T) {
 // CURRENT_TIMESTAMP text with a raw [time.Time] parameter and records both values
 // on failure because their textual forms intentionally differ.
 func TestMessagesSQLiteDefaultTimestamp_RawTimeComparison(t *testing.T) {
+	t.Parallel()
+
 	_, bunDB := newRepository(t)
 	ctx := context.Background()
 	const extID = "sqlite-default-timestamp"
@@ -675,6 +711,8 @@ func messageIDs(result []messages.Message) []string {
 // date-range convention: a message whose created_at equals the from timestamp
 // IS returned (created_at >= from).
 func TestList_FilterFromInclusive(t *testing.T) {
+	t.Parallel()
+
 	repo, bunDB := newRepository(t)
 	ctx := context.Background()
 
@@ -686,7 +724,15 @@ func TestList_FilterFromInclusive(t *testing.T) {
 	)
 
 	result, _, err := repo.List(ctx, messages.ListOptions{
-		Filter: &messages.ListFilter{From: &from, To: &to},
+		Filter: &messages.ListFilter{
+			DeviceID: nil,
+			State:    nil,
+			From:     &from,
+			To:       &to,
+		},
+		Order:      nil,
+		Pagination: nil,
+		Flags:      nil,
 	})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -700,6 +746,8 @@ func TestList_FilterFromInclusive(t *testing.T) {
 // convention: a message whose created_at equals the to timestamp is NOT
 // returned (created_at < to).
 func TestList_FilterToExclusive(t *testing.T) {
+	t.Parallel()
+
 	repo, bunDB := newRepository(t)
 	ctx := context.Background()
 
@@ -711,7 +759,15 @@ func TestList_FilterToExclusive(t *testing.T) {
 	)
 
 	result, _, err := repo.List(ctx, messages.ListOptions{
-		Filter: &messages.ListFilter{From: &from, To: &to},
+		Filter: &messages.ListFilter{
+			DeviceID: nil,
+			State:    nil,
+			From:     &from,
+			To:       &to,
+		},
+		Order:      nil,
+		Pagination: nil,
+		Flags:      nil,
 	})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -728,6 +784,8 @@ func TestList_FilterToExclusive(t *testing.T) {
 // storage layer: rows seeded at from, between and to (millisecond precision)
 // yield exactly [from, between] in the result set.
 func TestList_FilterBoundaryMembership(t *testing.T) {
+	t.Parallel()
+
 	repo, bunDB := newRepository(t)
 	ctx := context.Background()
 
@@ -741,7 +799,15 @@ func TestList_FilterBoundaryMembership(t *testing.T) {
 	)
 
 	result, total, err := repo.List(ctx, messages.ListOptions{
-		Filter: &messages.ListFilter{From: &from, To: &to},
+		Filter: &messages.ListFilter{
+			DeviceID: nil,
+			State:    nil,
+			From:     &from,
+			To:       &to,
+		},
+		Order:      nil,
+		Pagination: nil,
+		Flags:      nil,
 	})
 	if err != nil {
 		t.Fatalf("list: %v", err)

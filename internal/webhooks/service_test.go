@@ -23,7 +23,19 @@ const testFixtureSigningKey = "webhooks-test-key"
 // *webhooks.Service together with the devices service so tests can read the
 // local device id that Replace validates supplied deviceIds against.
 func newService(t *testing.T) (*webhooks.Service, *devices.Service) {
-	svc, devicesSvc, _ := newServiceFixture(t, webhooks.Config{SigningKey: testFixtureSigningKey})
+	svc, devicesSvc, _ := newServiceFixture(t, webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testFixtureSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	})
 	return svc, devicesSvc
 }
 
@@ -70,6 +82,8 @@ func newWebhookDTO(id string, deviceID *string, url string, event smsgateway.Web
 // types are rejected with ErrInvalidEvent and nothing is persisted, across
 // three distinct invalid inputs.
 func TestReplace_InvalidEvent(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		event smsgateway.WebhookEvent
@@ -81,6 +95,8 @@ func TestReplace_InvalidEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, _ := newService(t)
 			ctx := context.Background()
 
@@ -106,6 +122,8 @@ func TestReplace_InvalidEvent(t *testing.T) {
 // ErrDeviceNotFound across three distinct foreign ids, and nothing is
 // persisted.
 func TestReplace_ForeignDeviceID(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		foreign string
@@ -117,6 +135,8 @@ func TestReplace_ForeignDeviceID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, _ := newService(t)
 			ctx := context.Background()
 
@@ -143,6 +163,8 @@ func TestReplace_ForeignDeviceID(t *testing.T) {
 // NULL), NEVER the local device id - and the dto is normalized to nil so the
 // 201 echo carries deviceId null.
 func TestReplace_NilOrEmptyDeviceIDStoresNull(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		deviceID *string
@@ -153,6 +175,8 @@ func TestReplace_NilOrEmptyDeviceIDStoresNull(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, devicesSvc := newService(t)
 			ctx := context.Background()
 			localID := devicesSvc.Get().ID
@@ -192,6 +216,8 @@ func TestReplace_NilOrEmptyDeviceIDStoresNull(t *testing.T) {
 // TestReplace_MatchingLocalDeviceIDAccepted verifies a non-empty deviceId equal
 // to the local device id is accepted, stored, and echoed back on the dto.
 func TestReplace_MatchingLocalDeviceIDAccepted(t *testing.T) {
+	t.Parallel()
+
 	svc, devicesSvc := newService(t)
 	ctx := context.Background()
 	localID := devicesSvc.Get().ID
@@ -220,6 +246,8 @@ func TestReplace_MatchingLocalDeviceIDAccepted(t *testing.T) {
 // replaced with a generated nanoid (mutating the input for server 201-echo
 // parity) while a supplied ID is preserved exactly.
 func TestReplace_IDGeneration(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		suppliedID string
@@ -232,6 +260,8 @@ func TestReplace_IDGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, _ := newService(t)
 			ctx := context.Background()
 
@@ -269,6 +299,8 @@ func TestReplace_IDGeneration(t *testing.T) {
 // even an empty URL - the http_url gate belongs to the edge validator, and
 // client-go Webhook.Validate() is never called here.
 func TestReplace_DoesNotEnforceHTTPS(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		url  string
@@ -280,6 +312,8 @@ func TestReplace_DoesNotEnforceHTTPS(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, _ := newService(t)
 			ctx := context.Background()
 
@@ -305,6 +339,8 @@ func TestReplace_DoesNotEnforceHTTPS(t *testing.T) {
 // TestReplace_UpsertByGeneratedID proves repeated Replace calls with the same
 // (generated or supplied) id keep a single registry row and refresh its fields.
 func TestReplace_UpsertByGeneratedID(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newService(t)
 	ctx := context.Background()
 
@@ -339,6 +375,8 @@ func TestReplace_UpsertByGeneratedID(t *testing.T) {
 // TestSelect_EmptyRegistryReturnsEmptySlice pins AC4: an idle registry yields
 // an empty non-nil slice, never nil.
 func TestSelect_EmptyRegistryReturnsEmptySlice(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newService(t)
 
 	got, err := svc.Select(context.Background())
@@ -357,7 +395,11 @@ func TestSelect_EmptyRegistryReturnsEmptySlice(t *testing.T) {
 // Replace that supplied the local device id, Select returns DeviceID present
 // (equal to the local id) plus ID/URL/Event from the registry, across three
 // distinct events.
+//
+//nolint:paralleltest,tparallel // subtests accumulate registrations and each asserts len(got) == i+1, so they must run in declaration order
 func TestSelect_DeviceIDPresent(t *testing.T) {
+	t.Parallel()
+
 	svc, devicesSvc := newService(t)
 	ctx := context.Background()
 	localID := devicesSvc.Get().ID
@@ -410,7 +452,11 @@ func TestSelect_DeviceIDPresent(t *testing.T) {
 // TestSelect_DeviceIDNullWhenUnscoped pins owner rule 1 at the Select layer:
 // webhooks registered without a deviceId return DeviceID nil (JSON null), never
 // the local device id, across three distinct events.
+//
+//nolint:paralleltest,tparallel // subtests accumulate registrations and each asserts len(got) == i+1, so they must run in declaration order
 func TestSelect_DeviceIDNullWhenUnscoped(t *testing.T) {
+	t.Parallel()
+
 	svc, devicesSvc := newService(t)
 	ctx := context.Background()
 	localID := devicesSvc.Get().ID
@@ -455,6 +501,8 @@ func TestSelect_DeviceIDNullWhenUnscoped(t *testing.T) {
 // already-deleted id all succeed without ErrNotFound and without touching
 // unrelated rows.
 func TestDelete_Idempotent(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newService(t)
 	ctx := context.Background()
 
@@ -491,6 +539,8 @@ func TestDelete_Idempotent(t *testing.T) {
 // TestSentinels_MatchWithErrorsIs verifies AC6: both sentinels are distinct
 // static errors matched only via [errors.Is].
 func TestSentinels_MatchWithErrorsIs(t *testing.T) {
+	t.Parallel()
+
 	if errors.Is(webhooks.ErrInvalidEvent, webhooks.ErrDeviceNotFound) {
 		t.Fatal("ErrInvalidEvent matches ErrDeviceNotFound, want distinct sentinels")
 	}
@@ -509,7 +559,21 @@ func TestSentinels_MatchWithErrorsIs(t *testing.T) {
 // URL snapshot: only matching registry rows produce queue items, and the
 // envelope device id always comes from the local device service.
 func TestEmitSmsSent_BuildsOneEnvelopePerMatchingWebhook(t *testing.T) {
-	svc, devicesSvc, repo := newServiceFixture(t, webhooks.Config{SigningKey: testFixtureSigningKey})
+	t.Parallel()
+
+	svc, devicesSvc, repo := newServiceFixture(t, webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testFixtureSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	})
 	ctx := context.Background()
 	localID := devicesSvc.Get().ID
 
@@ -602,7 +666,21 @@ func TestEmitSmsSent_BuildsOneEnvelopePerMatchingWebhook(t *testing.T) {
 }
 
 func TestMessageEventMethods_MapToEventAndTimestamp(t *testing.T) {
-	svc, _, repo := newServiceFixture(t, webhooks.Config{SigningKey: testFixtureSigningKey})
+	t.Parallel()
+
+	svc, _, repo := newServiceFixture(t, webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testFixtureSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	})
 	ctx := context.Background()
 	at := time.Date(2026, time.September, 25, 12, 34, 56, 123456789, time.UTC)
 	recipient := "+79990009999"
@@ -627,6 +705,7 @@ func TestMessageEventMethods_MapToEventAndTimestamp(t *testing.T) {
 			name:           "sent",
 			event:          smsgateway.WebhookEventSmsSent,
 			timestampField: "sentAt",
+			reason:         "",
 			emit: func(svc *webhooks.Service, event webhooks.MessageEvent) {
 				svc.EmitSmsSent(event)
 			},
@@ -635,6 +714,7 @@ func TestMessageEventMethods_MapToEventAndTimestamp(t *testing.T) {
 			name:           "delivered",
 			event:          smsgateway.WebhookEventSmsDelivered,
 			timestampField: "deliveredAt",
+			reason:         "",
 			emit: func(svc *webhooks.Service, event webhooks.MessageEvent) {
 				svc.EmitSmsDelivered(event)
 			},
@@ -652,6 +732,7 @@ func TestMessageEventMethods_MapToEventAndTimestamp(t *testing.T) {
 			name:           "cancelled",
 			event:          smsgateway.WebhookEventSmsCancelled,
 			timestampField: "cancelledAt",
+			reason:         "",
 			emit: func(svc *webhooks.Service, event webhooks.MessageEvent) {
 				svc.EmitSmsCancelled(event)
 			},
@@ -763,7 +844,21 @@ func TestMessageEventMethods_MapToEventAndTimestamp(t *testing.T) {
 // TestEmitSmsSent_NoMatchesPerformsNoQueueWrites pins the empty-registry and event
 // mismatch boundary: emission performs a registry read but creates no queue rows.
 func TestEmitSmsSent_NoMatchesPerformsNoQueueWrites(t *testing.T) {
-	svc, _, repo := newServiceFixture(t, webhooks.Config{SigningKey: testFixtureSigningKey})
+	t.Parallel()
+
+	svc, _, repo := newServiceFixture(t, webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testFixtureSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	})
 	ctx := context.Background()
 
 	if err := svc.Replace(ctx, newWebhookDTO(
@@ -775,7 +870,14 @@ func TestEmitSmsSent_NoMatchesPerformsNoQueueWrites(t *testing.T) {
 		t.Fatalf("replace webhook: %v", err)
 	}
 
-	svc.EmitSmsSent(webhooks.MessageEvent{At: time.Now().UTC()})
+	svc.EmitSmsSent(webhooks.MessageEvent{
+		MessageID:   "",
+		PhoneNumber: "",
+		Sender:      "",
+		Recipient:   nil,
+		SimNumber:   nil,
+		At:          time.Now().UTC(),
+	})
 
 	items, err := repo.DueItems(ctx, time.Now().Add(time.Hour), 10)
 	if err != nil {
@@ -789,7 +891,21 @@ func TestEmitSmsSent_NoMatchesPerformsNoQueueWrites(t *testing.T) {
 // TestEmit_SwallowsPayloadMarshalError pins the fire-and-forget error path:
 // an unsupported payload is logged and ignored without creating a queue row.
 func TestEmit_SwallowsPayloadMarshalError(t *testing.T) {
-	svc, _, repo := newServiceFixture(t, webhooks.Config{SigningKey: testFixtureSigningKey})
+	t.Parallel()
+
+	svc, _, repo := newServiceFixture(t, webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testFixtureSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	})
 	ctx := context.Background()
 
 	if err := svc.Replace(ctx, newWebhookDTO(
@@ -814,6 +930,8 @@ func TestEmit_SwallowsPayloadMarshalError(t *testing.T) {
 
 // TestMetrics_Mutators pins that each public mutator increments its own counter.
 func TestMetrics_Mutators(t *testing.T) {
+	t.Parallel()
+
 	metrics := newTestMetrics()
 	metrics.IncEnqueued()
 	metrics.IncDelivered()
@@ -831,6 +949,8 @@ func TestMetrics_Mutators(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			if got := webhooks.CounterValue(metrics, tt.name); got != tt.want {
 				t.Fatalf("counter value = %v, want %v", got, tt.want)
 			}

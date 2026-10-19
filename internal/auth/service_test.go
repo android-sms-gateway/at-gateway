@@ -42,6 +42,8 @@ func newReader(t *testing.T, path string) *storage.Service {
 }
 
 func TestResolvePassword_ConfiguredWins(t *testing.T) {
+	t.Parallel()
+
 	svc, storageSvc, _ := newTestService(t, auth.Config{
 		Basic: auth.BasicConfig{
 			Username: "admin",
@@ -59,7 +61,9 @@ func TestResolvePassword_ConfiguredWins(t *testing.T) {
 }
 
 func TestResolvePassword_StoredReused(t *testing.T) {
-	svc, storageSvc, _ := newTestService(t, auth.Config{})
+	t.Parallel()
+
+	svc, storageSvc, _ := newTestService(t, auth.Config{Basic: auth.BasicConfig{Username: "", Password: ""}})
 	if err := storageSvc.Set("auth.password", "stored"); err != nil {
 		t.Fatalf("failed to store password: %v", err)
 	}
@@ -70,7 +74,9 @@ func TestResolvePassword_StoredReused(t *testing.T) {
 }
 
 func TestResolvePassword_GeneratesOnFirstRun(t *testing.T) {
-	svc, storageSvc, _ := newTestService(t, auth.Config{})
+	t.Parallel()
+
+	svc, storageSvc, _ := newTestService(t, auth.Config{Basic: auth.BasicConfig{Username: "", Password: ""}})
 
 	if err := svc.ValidateBasic(auth.DefaultUsername, "wrong"); err == nil {
 		t.Fatal("expected unknown password to fail before generation")
@@ -87,7 +93,9 @@ func TestResolvePassword_GeneratesOnFirstRun(t *testing.T) {
 }
 
 func TestResolvePassword_GeneratedPersisted(t *testing.T) {
-	svc, storageSvc, path := newTestService(t, auth.Config{})
+	t.Parallel()
+
+	svc, storageSvc, path := newTestService(t, auth.Config{Basic: auth.BasicConfig{Username: "", Password: ""}})
 
 	_ = svc.ValidateBasic(auth.DefaultUsername, "wrong")
 	password := storageSvc.Get("auth.password")

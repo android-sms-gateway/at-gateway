@@ -14,6 +14,8 @@ import (
 // Euro sign cost two septets) or 67 UCS-2 characters once the concatenation
 // UDH is present; a single-part SMS fits 160 septets / 70 UCS-2 characters.
 func TestSegmentCount(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		text string
@@ -37,6 +39,8 @@ func TestSegmentCount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := modem.SegmentCount(tt.text)
 			if err != nil {
 				t.Fatalf("SegmentCount(%q) = error %v, want %d parts", tt.text, err, tt.want)
@@ -51,6 +55,8 @@ func TestSegmentCount(t *testing.T) {
 // TestValidateText_Accept pins the validator happy path: ASCII, extended
 // GSM-7 runes and UCS-2 text all pass within the part cap.
 func TestValidateText_Accept(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		text     string
@@ -64,6 +70,8 @@ func TestValidateText_Accept(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			if err := modem.ValidateText(tt.text, tt.maxParts); err != nil {
 				t.Fatalf("ValidateText() = %v, want nil", err)
 			}
@@ -75,6 +83,8 @@ func TestValidateText_Accept(t *testing.T) {
 // the configured cap, and text beyond the protocol ceiling (the cap only
 // relaxes within the protocol; a zero maxParts keeps the ceiling).
 func TestValidateText_Reject(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		text     string
@@ -89,6 +99,8 @@ func TestValidateText_Reject(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			err := modem.ValidateText(tt.text, tt.maxParts)
 			if err == nil {
 				t.Fatal("ValidateText() = nil, want error")
@@ -107,6 +119,8 @@ func TestValidateText_Reject(t *testing.T) {
 // characters are exactly 10 parts and pass; the configurable cap is
 // inclusive.
 func TestValidateText_CapBoundary(t *testing.T) {
+	t.Parallel()
+
 	if err := modem.ValidateText(strings.Repeat("a", 1530), 10); err != nil {
 		t.Fatalf("ValidateText(10 parts) = %v, want nil", err)
 	}
