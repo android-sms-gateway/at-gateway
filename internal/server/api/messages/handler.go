@@ -225,5 +225,5 @@ func (h *Handler) errorHandler(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 
-	return err //nolint:wrapcheck // already wrapped
+	return err
 }
