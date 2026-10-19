@@ -1129,10 +1129,14 @@ func TestInboundRoute_CMGDRetriesExponentialBackoff(t *testing.T) {
 		config.Cmgd = modem.CmgdConfig{RetryAttempts: 3, RetryBackoff: 5 * time.Millisecond}
 		service, metrics, scratch := newInboundService(t, config, scripted)
 
+		// The clock starts BEFORE the push, not after receivePart returns:
+		// the delete backoff runs on the handler's own goroutine, so a test
+		// goroutine descheduled between the two would otherwise lose part of
+		// the 15ms budget and read the retry back as too short.
+		start := time.Now()
 		pushURC(scratch, `+CMTI: "ME",1`)
 		receivePart(t, service)
 
-		start := time.Now()
 		waitForCount(t, "three delete attempts", func() bool {
 			_, deletes := scripted.counters()
 
