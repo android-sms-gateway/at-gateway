@@ -59,6 +59,14 @@ func (d *inboundDeduper) served(messageID string, now time.Time) []string {
 // is always retried for that webhook.
 func (d *inboundDeduper) mark(messageID, webhookID string, now time.Time) {
 	entry, ok := d.entries[messageID]
+	if ok && now.Sub(entry.seenAt) >= d.ttl {
+		// An expired entry serves nothing (see served), so its marks must not
+		// outlive it either: keeping them would hide a webhook whose re-enqueue
+		// just failed for a whole FRESH TTL, not just the leftover one. The
+		// entry keeps its slot in d.order - only the webhook set and the stamp
+		// reset, so the id is not appended twice.
+		entry = inboundDedupEntry{webhooks: make(map[string]struct{}), seenAt: now}
+	}
 	if !ok {
 		if len(d.entries) >= d.capacity {
 			d.evictOldest()

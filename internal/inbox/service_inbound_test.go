@@ -3,6 +3,7 @@ package inbox_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +20,14 @@ import (
 	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 )
+
+// TestMain warms the GSM charsets on the main goroutine before any fixture
+// builds a modem service: warthog618/sms initialises them lazily, and the
+// parallel tests below would otherwise race on that first construction.
+func TestMain(m *testing.M) {
+	modem.WarmGSMCharsets()
+	os.Exit(m.Run())
+}
 
 // inboundBase is the service-centre stamp every inbound fixture carries; it is
 // the value the emitted receivedAt must reproduce in UTC. It is a function
@@ -58,7 +67,19 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 
 	metrics := inbox.NewTestMetrics(prometheus.NewRegistry())
 	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{SigningKey: "messages-inbound-test-key"},
+		webhooks.Config{
+			SigningKey: "messages-inbound-test-key",
+			RetryCount: 0,
+			Queue: webhooks.QueueConfig{
+				BatchSize:              0,
+				RequestTimeout:         0,
+				DialTimeout:            0,
+				RetryBaseDelay:         0,
+				IdleDelay:              0,
+				StuckProcessingTimeout: 0,
+				CleanupRetention:       0,
+			},
+		},
 		webhooks.NewRepository(bunDB),
 		devicesSvc,
 		storageSvc,
@@ -72,7 +93,20 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 	// The modem service is never run: the consumer only reads its cached SIM
 	// state, which is empty here - exactly the "SIM reports no MSISDN" case the
 	// payload contract allows (recipient omitted).
-	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil, webhooksSvc)
+	modemSvc := modem.NewService(modem.Config{
+		Port:           "",
+		BaudRate:       0,
+		InitTimeout:    0,
+		CommandTimeout: 0,
+		Cmgd: modem.CmgdConfig{
+			RetryAttempts: 0,
+			RetryBackoff:  0,
+		},
+		Store: modem.StoreConfig{
+			Memory:        "",
+			SweepInterval: 0,
+		},
+	}, zap.NewNop(), nil, webhooksSvc)
 
 	service := inbox.NewService(
 		config,
@@ -224,7 +258,9 @@ func dataPart(content string, port uint16) modem.InboundPart {
 // omitted while the SIM reports no MSISDN, simNumber is 1 and receivedAt is the
 // service-centre stamp in UTC.
 func TestInbound_SinglePartEmitsOneSignedPayload(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	f.registerWebhook(t, "text", smsgateway.WebhookEventSmsReceived)
 	f.registerWebhook(t, "other", smsgateway.WebhookEventSmsSent)
 
@@ -280,7 +316,9 @@ func TestInbound_SinglePartEmitsOneSignedPayload(t *testing.T) {
 // TestInbound_PortAddressedEmitsDataReceived pins the sms:data-received
 // contract: the assembled octets base64 NO_WRAP encoded, and no message field.
 func TestInbound_PortAddressedEmitsDataReceived(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	f.registerWebhook(t, "data", smsgateway.WebhookEventSmsDataReceived)
 	f.registerWebhook(t, "text", smsgateway.WebhookEventSmsReceived)
 
@@ -328,6 +366,8 @@ func TestInbound_PortAddressedEmitsDataReceived(t *testing.T) {
 // reference widths and both arrival orders: exactly ONE event, with the parts
 // concatenated in SEQUENCE order regardless of the order they arrived in.
 func TestInbound_ConcatReassemblesIntoOneEvent(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		refWidth   int
@@ -342,7 +382,8 @@ func TestInbound_ConcatReassemblesIntoOneEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newInboundFixture(t, inbox.Config{})
+			t.Parallel()
+			f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 			f.registerWebhook(t, "concat", smsgateway.WebhookEventSmsReceived)
 
 			for _, sequence := range tt.sequences {
@@ -390,7 +431,9 @@ func partText(index int) string {
 // key: a 0x42 8-bit reference and a 0x0042 16-bit reference from the SAME
 // sender are two independent messages, interleaved part by part.
 func TestInbound_ConcatRefCollisionDoesNotMerge(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	f.registerWebhook(t, "narrow", smsgateway.WebhookEventSmsReceived)
 
 	// Interleave the two messages: 8-bit seq 1, 16-bit seq 1, 8-bit seq 2,
@@ -435,8 +478,11 @@ func TestInbound_ConcatRefCollisionDoesNotMerge(t *testing.T) {
 // SLOW concatenation (parts minutes apart, inside the configured window) still
 // yields exactly one event instead of two partial ones.
 func TestInbound_SlowMultipartWithinWindowEmitsOneEvent(t *testing.T) {
+	t.Parallel()
+
 	f := newInboundFixture(t, inbox.Config{
 		ReassemblyTimeout: 5 * time.Minute,
+		SweepInterval:     0,
 	})
 	f.registerWebhook(t, "slow", smsgateway.WebhookEventSmsReceived)
 
@@ -470,9 +516,12 @@ func TestInbound_SlowMultipartWithinWindowEmitsOneEvent(t *testing.T) {
 // siblings never arrive is dropped (never emitted as a partial message) once
 // the configured window elapsed, and the timeout counter moves.
 func TestInbound_ReassemblyTimeoutEvictsAndCounts(t *testing.T) {
+	t.Parallel()
+
 	const timeout = 5 * time.Minute
 	f := newInboundFixture(t, inbox.Config{
 		ReassemblyTimeout: timeout,
+		SweepInterval:     0,
 	})
 	f.registerWebhook(t, "timeout", smsgateway.WebhookEventSmsReceived)
 
@@ -521,9 +570,12 @@ func TestInbound_ReassemblyTimeoutEvictsAndCounts(t *testing.T) {
 // incomplete group is evicted, counted exactly like a window timeout, and never
 // emitted as a partial message.
 func TestInbound_GroupCapacityEvictionCounts(t *testing.T) {
+	t.Parallel()
+
 	const capacity = 512
 	f := newInboundFixture(t, inbox.Config{
 		ReassemblyTimeout: time.Hour,
+		SweepInterval:     0,
 	})
 	f.registerWebhook(t, "capacity", smsgateway.WebhookEventSmsReceived)
 
@@ -582,6 +634,8 @@ func TestInbound_GroupCapacityEvictionCounts(t *testing.T) {
 // only counts timeouts, which is why the Help text is read off the PRODUCTION
 // registration instead of a test-local copy.
 func TestInbound_ReassemblyEvictionMetricHelpNamesBothCauses(t *testing.T) {
+	t.Parallel()
+
 	help := productionMetricHelp(t, "at_gateway_inbox_reassembly_timeouts_total")
 
 	for _, want := range []string{"window", "capacity"} {
@@ -633,7 +687,9 @@ func gatheredMetricHelp(name string) (string, bool) {
 // TestInbound_ShutdownAbortsIncompleteGroups pins the shutdown accounting: the
 // groups that never completed are counted when the worker stops.
 func TestInbound_ShutdownAbortsIncompleteGroups(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	f.registerWebhook(t, "abort", smsgateway.WebhookEventSmsReceived)
 
 	f.service.HandleInboundPartForTest(concatPart("aaaa", 2, 1, 0x07, 8), inboundBase())
@@ -656,7 +712,9 @@ func TestInbound_ShutdownAbortsIncompleteGroups(t *testing.T) {
 // performs the abort accounting (the production call site, not just the
 // exported helper).
 func TestInbound_ShutdownAbortRunsFromTheRunLoop(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{SweepInterval: time.Hour})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: time.Hour})
 	f.registerWebhook(t, "abort", smsgateway.WebhookEventSmsReceived)
 
 	f.service.HandleInboundPartForTest(concatPart("aaaa", 2, 1, 0x07, 8), inboundBase())
@@ -689,7 +747,9 @@ func TestInbound_ShutdownAbortRunsFromTheRunLoop(t *testing.T) {
 // damper: a modem re-notification of an UNDELETED index inside the 10-minute
 // window produces no second queue item, and after the window it does.
 func TestInbound_DedupeSuppressesWithinTheWindowAndReEmitsAfterIt(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	f.registerWebhook(t, "dedupe", smsgateway.WebhookEventSmsReceived)
 
 	f.service.HandleInboundPartForTest(textPart("hello"), inboundBase())
@@ -719,7 +779,9 @@ func TestInbound_DedupeSuppressesWithinTheWindowAndReEmitsAfterIt(t *testing.T) 
 // all-or-nothing mark would suppress the failed hook too and silently lose the
 // event (a) and would blast duplicates at every other hook (c).
 func TestInbound_DedupeMarksPerWebhook(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	for _, id := range []string{"ok-1", "ok-2", "broken"} {
 		f.registerWebhook(t, id, smsgateway.WebhookEventSmsReceived)
 	}
@@ -768,11 +830,46 @@ func TestInbound_DedupeMarksPerWebhook(t *testing.T) {
 	}
 }
 
+// TestInbound_DedupeDropsTheMarksOfAnExpiredEntry pins the counterpart of
+// served: an elapsed entry is forgotten by mark, not only by sweep. Keeping the
+// marks would hide a webhook whose re-enqueue just failed for a whole FRESH
+// TTL instead of the leftover one, which breaks the rule mark documents.
+func TestInbound_DedupeDropsTheMarksOfAnExpiredEntry(t *testing.T) {
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
+	dedupe := f.service.DedupeForTest()
+
+	dedupe.MarkServedForTest("message", "hook-a", inboundBase())
+	dedupe.MarkServedForTest("message", "hook-b", inboundBase())
+
+	// The window elapses. The sweep has NOT run, so the entry - carrying both
+	// marks - is still on the map: served already reports nothing for it.
+	expired := inboundBase().Add(dedupe.TTLForTest() + time.Second)
+	if served := dedupe.ServedForTest("message", expired); len(served) != 0 {
+		t.Fatalf("expired entry served %v, want nothing", served)
+	}
+
+	// The modem re-notifies the undeleted index and only hook-a's enqueue
+	// succeeds, so only hook-a may be marked.
+	dedupe.MarkServedForTest("message", "hook-a", expired)
+
+	served := dedupe.ServedForTest("message", expired)
+	if len(served) != 1 || served[0] != "hook-a" {
+		t.Errorf(
+			"served %v, want [hook-a] - the stale hook-b mark must not outlive the expiry",
+			served,
+		)
+	}
+}
+
 // TestInbound_MessageIDIsDeterministicAndStampFree pins the identity: the same
 // content yields the same 16-hex-char id, different content or port yields a
 // different one, and a message without a usable TP-SCTS gets a STABLE id that
 // omits the stamp (so a re-notification still maps to the same id).
 func TestInbound_MessageIDIsDeterministicAndStampFree(t *testing.T) {
+	t.Parallel()
+
 	base := inbox.NewInboundMessage(inboundSender, "hello", false, 0, inboundBase(), true, nil)
 	want := inbox.InboundMessageID(base)
 
@@ -842,7 +939,9 @@ func TestInbound_MessageIDIsDeterministicAndStampFree(t *testing.T) {
 // event, its receivedAt falls back to the observation time and two deliveries
 // of the same content collapse onto ONE id (and therefore one emission).
 func TestInbound_MalformedSCTSUsesTheStampFreeIdentityAndObservationTime(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	f.registerWebhook(t, "nostamp", smsgateway.WebhookEventSmsReceived)
 
 	part := textPart("hello")
@@ -881,7 +980,9 @@ func TestInbound_MalformedSCTSUsesTheStampFreeIdentityAndObservationTime(t *test
 // TestInbound_DedupeCapacityEvictsTheOldest pins the pinned capacity of 1024
 // remembered message ids.
 func TestInbound_DedupeCapacityEvictsTheOldest(t *testing.T) {
-	f := newInboundFixture(t, inbox.Config{})
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
 	dedupe := f.service.DedupeForTest()
 
 	if got := dedupe.CapacityForTest(); got != 1024 {
@@ -917,8 +1018,11 @@ func idForIndex(index int) string {
 // (the dedupe has no memory of a previous process), and the counting stops once
 // the window elapsed.
 func TestInbound_PostRestartWindowCountsAcceptedEmissions(t *testing.T) {
+	t.Parallel()
+
 	f := newInboundFixture(t, inbox.Config{
 		ReassemblyTimeout: 5 * time.Minute,
+		SweepInterval:     0,
 	})
 	f.registerWebhook(t, "restart", smsgateway.WebhookEventSmsReceived)
 
