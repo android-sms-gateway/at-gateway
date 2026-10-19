@@ -16,6 +16,8 @@ import (
 // JSON object {} - the accepted parity gap versus the Android gateway, which
 // publishes {"health": {...}} there.
 func TestEmitSystemPing_RawEnvelopeCarriesAnEmptyJSONObject(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, _, devicesSvc := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 
@@ -79,6 +81,8 @@ func TestEmitSystemPing_RawEnvelopeCarriesAnEmptyJSONObject(t *testing.T) {
 // webhook for a different event is registered), the tick performs no queue
 // writes at all.
 func TestEmitSystemPing_NoMatchingWebhookWritesNoQueueRows(t *testing.T) {
+	t.Parallel()
+
 	svc, _, bunDB, _ := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 

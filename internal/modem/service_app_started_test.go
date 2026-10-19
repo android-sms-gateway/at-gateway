@@ -150,7 +150,19 @@ func newWebhookFixture(t *testing.T) (*webhooks.Service, *webhooks.Repository) {
 	}
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 	service, err := webhooks.NewService(
-		webhooks.Config{SigningKey: "modem-app-started-test-key"},
+		webhooks.Config{
+			SigningKey: "modem-app-started-test-key",
+			RetryCount: 0,
+			Queue: webhooks.QueueConfig{
+				BatchSize:              0,
+				RequestTimeout:         0,
+				DialTimeout:            0,
+				RetryBaseDelay:         0,
+				IdleDelay:              0,
+				StuckProcessingTimeout: 0,
+				CleanupRetention:       0,
+			},
+		},
 		repo,
 		devicesSvc,
 		storageSvc,
@@ -181,6 +193,9 @@ func newAppStartedService(
 		return &servicePort{&scriptedModem{
 			responses: make(chan []byte, 1024),
 			onWrite:   scripted.respond,
+			mu:        sync.Mutex{},
+			writes:    []string{},
+			closed:    false,
 		}}, nil
 	})
 
@@ -315,6 +330,8 @@ func registerWebhooks(t *testing.T, service *webhooks.Service, hookIDs []string,
 // app:started webhook (never for another event), the payload carries the SIM
 // snapshot read at ready time, and a second ready transition never re-emits.
 func TestAppStarted_EmittedOncePerProcessAtReady(t *testing.T) {
+	t.Parallel()
+
 	const (
 		hookFirst  = "app-started-first"
 		hookOther  = "app-started-other-event"
@@ -369,6 +386,8 @@ func TestAppStarted_EmittedOncePerProcessAtReady(t *testing.T) {
 // always present, every unreported attribute is OMITTED from the wire payload
 // (client-go omitempty pointers) and never sent as an empty string.
 func TestAppStarted_UnreportedSIMFieldsAreOmitted(t *testing.T) {
+	t.Parallel()
+
 	const hookID = "app-started-empty-sim"
 
 	webhooksSvc, repo := newWebhookFixture(t)
@@ -391,6 +410,8 @@ func TestAppStarted_UnreportedSIMFieldsAreOmitted(t *testing.T) {
 // boundary end to end: an emission nobody registered for is a no-op that stores
 // no queue row, so a device without an app:started webhook pays no DB work.
 func TestAppStarted_NoRegisteredWebhookStoresNothing(t *testing.T) {
+	t.Parallel()
+
 	webhooksSvc, repo := newWebhookFixture(t)
 	registerWebhooks(t, webhooksSvc, []string{"sms-sent-only"}, smsgateway.WebhookEventSmsSent)
 
@@ -417,6 +438,8 @@ func TestAppStarted_NoRegisteredWebhookStoresNothing(t *testing.T) {
 // up. An emission bound to fx OnStart, which planning explicitly rejected,
 // would store a row inside the loop below.
 func TestAppStarted_NotEmittedBeforeReadyState(t *testing.T) {
+	t.Parallel()
+
 	const hookID = "app-started-before-ready"
 
 	webhooksSvc, repo := newWebhookFixture(t)
@@ -424,7 +447,11 @@ func TestAppStarted_NotEmittedBeforeReadyState(t *testing.T) {
 
 	// A modem that never answers: every init row hits the command timeout, so
 	// the service stays in the connecting state and connect() gives up.
-	silent := &appStartedModem{sims: func(string) [][]byte { return nil }}
+	silent := &appStartedModem{
+		sims:        func(string) [][]byte { return nil },
+		pinLocked:   false,
+		rejectedRow: "",
+	}
 	service, metrics, _ := newAppStartedService(t, silent, webhooksSvc)
 	run := runModem(t, service)
 
@@ -461,6 +488,8 @@ func TestAppStarted_NotEmittedBeforeReadyState(t *testing.T) {
 // ready" entry is logged before the error that stops the app, and NO app:started
 // envelope is stored.
 func TestInitFailure_NeverReachesReadyNorEmits(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		stage string
@@ -498,6 +527,8 @@ func TestInitFailure_NeverReachesReadyNorEmits(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			const hookID = "app-started-after-init-failure"
 
 			webhooksSvc, repo := newWebhookFixture(t)

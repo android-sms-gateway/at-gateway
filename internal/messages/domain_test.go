@@ -9,6 +9,8 @@ import (
 )
 
 func TestContent(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		build     func() *messages.MessageInput
@@ -21,49 +23,113 @@ func TestContent(t *testing.T) {
 			build: func() *messages.MessageInput {
 				return &messages.MessageInput{
 					MessageContent: messages.MessageContent{
-						TextContent: &smsgateway.TextMessage{Text: "hello"},
+						TextContent:       &smsgateway.TextMessage{Text: "hello"},
+						DataContent:       nil,
+						MultimediaContent: nil,
 					},
+					MessageOptions: messages.MessageOptions{
+						SimNumber:          nil,
+						WithDeliveryReport: nil,
+						ValidUntil:         nil,
+						ScheduleAt:         nil,
+						Priority:           0,
+					},
+					ExtID:        "",
+					DeviceID:     nil,
+					PhoneNumbers: nil,
+					IsEncrypted:  false,
 				}
 			},
 			wantType:  messages.ContentTypeText,
 			wantValue: `{"text":"hello"}`,
+			wantErr:   nil,
 		},
 		{
 			name: "data content marshals to Data DTO",
 			build: func() *messages.MessageInput {
 				return &messages.MessageInput{
 					MessageContent: messages.MessageContent{
-						DataContent: &smsgateway.DataMessage{Data: "aGVsbG8=", Port: 53739},
+						TextContent:       nil,
+						DataContent:       &smsgateway.DataMessage{Data: "aGVsbG8=", Port: 53739},
+						MultimediaContent: nil,
 					},
+					MessageOptions: messages.MessageOptions{
+						SimNumber:          nil,
+						WithDeliveryReport: nil,
+						ValidUntil:         nil,
+						ScheduleAt:         nil,
+						Priority:           0,
+					},
+					ExtID:        "",
+					DeviceID:     nil,
+					PhoneNumbers: nil,
+					IsEncrypted:  false,
 				}
 			},
 			wantType:  messages.ContentTypeData,
 			wantValue: `{"data":"aGVsbG8=","port":53739}`,
+			wantErr:   nil,
 		},
 		{
 			name: "multimedia content is not supported",
 			build: func() *messages.MessageInput {
 				return &messages.MessageInput{
 					MessageContent: messages.MessageContent{
+						TextContent: nil,
+						DataContent: nil,
 						MultimediaContent: &smsgateway.MmsMessage{
 							Text: ptr("world"),
 						},
 					},
+					MessageOptions: messages.MessageOptions{
+						SimNumber:          nil,
+						WithDeliveryReport: nil,
+						ValidUntil:         nil,
+						ScheduleAt:         nil,
+						Priority:           0,
+					},
+					ExtID:        "",
+					DeviceID:     nil,
+					PhoneNumbers: nil,
+					IsEncrypted:  false,
 				}
 			},
-			wantErr: messages.ErrNotSupported,
+			wantType:  "",
+			wantValue: "",
+			wantErr:   messages.ErrNotSupported,
 		},
 		{
 			name: "missing content is invalid",
 			build: func() *messages.MessageInput {
-				return &messages.MessageInput{}
+				return &messages.MessageInput{
+					MessageContent: messages.MessageContent{
+						TextContent:       nil,
+						DataContent:       nil,
+						MultimediaContent: nil,
+					},
+					MessageOptions: messages.MessageOptions{
+						SimNumber:          nil,
+						WithDeliveryReport: nil,
+						ValidUntil:         nil,
+						ScheduleAt:         nil,
+						Priority:           0,
+					},
+					ExtID:        "",
+					DeviceID:     nil,
+					PhoneNumbers: nil,
+					IsEncrypted:  false,
+				}
 			},
-			wantErr: messages.ErrInvalidContent,
+			wantType:  "",
+			wantValue: "",
+			wantErr:   messages.ErrInvalidContent,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			gotType, gotValue, err := tt.build().Content()
 			if want := tt.wantErr; want != nil {
 				if !errors.Is(err, want) {

@@ -99,7 +99,19 @@ func newHandlerApp(t *testing.T) (*fiber.App, *devices.Service) {
 
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{SigningKey: "webhooks-handler-test-key"},
+		webhooks.Config{
+			SigningKey: "webhooks-handler-test-key",
+			RetryCount: 0,
+			Queue: webhooks.QueueConfig{
+				BatchSize:              0,
+				RequestTimeout:         0,
+				DialTimeout:            0,
+				RetryBaseDelay:         0,
+				IdleDelay:              0,
+				StuckProcessingTimeout: 0,
+				CleanupRetention:       0,
+			},
+		},
 		repo,
 		devicesSvc,
 		storageSvc,
@@ -183,6 +195,8 @@ func webhookBody(url string, event smsgateway.WebhookEvent, deviceID *string) []
 // TestGetWebhooks_EmptyRegistry pins AC2: an idle registry answers 200 with
 // an empty JSON array (not null, not an error).
 func TestGetWebhooks_EmptyRegistry(t *testing.T) {
+	t.Parallel()
+
 	app, _ := newHandlerApp(t)
 
 	status, body := doRequest(t, app, http.MethodGet, "/api/v1/webhooks", nil)
@@ -199,6 +213,8 @@ func TestGetWebhooks_EmptyRegistry(t *testing.T) {
 // generated id and deviceId null - the local device id is NEVER filled -
 // across three distinct events/urls (required_test_first).
 func TestPostWebhooks_SuccessEchoesGeneratedIDNullDeviceID(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		body  []byte
@@ -227,6 +243,8 @@ func TestPostWebhooks_SuccessEchoesGeneratedIDNullDeviceID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			app, devicesSvc := newHandlerApp(t)
 
 			status, body := doRequest(t, app, http.MethodPost, "/api/v1/webhooks", tt.body)
@@ -261,6 +279,8 @@ func TestPostWebhooks_SuccessEchoesGeneratedIDNullDeviceID(t *testing.T) {
 // a deviceId equal to the local device is accepted; the 201 body and a
 // subsequent GET list both echo that supplied id (not null).
 func TestPostWebhooks_SuppliedLocalDeviceIDEchoed(t *testing.T) {
+	t.Parallel()
+
 	app, devicesSvc := newHandlerApp(t)
 	localID := devicesSvc.Get().ID
 
@@ -301,6 +321,8 @@ func TestPostWebhooks_SuppliedLocalDeviceIDEchoed(t *testing.T) {
 // validation error in {message} and {details}, marshaled exactly the way the
 // fiberfx validation middleware builds it.
 func TestPostWebhooks_InvalidEvent(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		event smsgateway.WebhookEvent
@@ -322,6 +344,8 @@ func TestPostWebhooks_InvalidEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			app, _ := newHandlerApp(t)
 
 			status, body := doRequest(
@@ -346,6 +370,8 @@ func TestPostWebhooks_InvalidEvent(t *testing.T) {
 // from the local device answers 400 with the full wrapped device-not-found
 // text.
 func TestPostWebhooks_ForeignDeviceID(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		foreign string
@@ -357,6 +383,8 @@ func TestPostWebhooks_ForeignDeviceID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			app, _ := newHandlerApp(t)
 			foreign := tt.foreign
 
@@ -384,6 +412,8 @@ func TestPostWebhooks_ForeignDeviceID(t *testing.T) {
 // middleware with {message, code} - message carries the unwrapped
 // validation.Errors.Error() string.
 func TestPostWebhooks_ValidatorRejected(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		body        []byte
@@ -408,6 +438,8 @@ func TestPostWebhooks_ValidatorRejected(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			app, _ := newHandlerApp(t)
 
 			status, body := doRequest(t, app, http.MethodPost, "/api/v1/webhooks", tt.body)
@@ -430,6 +462,8 @@ func TestPostWebhooks_ValidatorRejected(t *testing.T) {
 // create that omitted deviceId, the list answers 200 with the row and
 // deviceId null (registered for all devices), across successive listings.
 func TestGetWebhooks_ListAfterCreate(t *testing.T) {
+	t.Parallel()
+
 	app, _ := newHandlerApp(t)
 
 	status, _ := doRequest(
@@ -472,6 +506,8 @@ func TestGetWebhooks_ListAfterCreate(t *testing.T) {
 // TestDeleteWebhooks_Idempotent pins AC4: known id -> 204, same id again ->
 // 204, unknown id -> 204 (server parity: no 404 case, required_test_first).
 func TestDeleteWebhooks_Idempotent(t *testing.T) {
+	t.Parallel()
+
 	app, _ := newHandlerApp(t)
 
 	status, body := doRequest(

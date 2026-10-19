@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,7 +55,19 @@ func newInboundFixture(
 
 // inboundConfig is the registry-only config: emission needs no queue tuning.
 func inboundConfig() webhooks.Config {
-	return webhooks.Config{SigningKey: testFixtureSigningKey}
+	return webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testFixtureSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	}
 }
 
 // inboundEvent is the fixture every inbound-emitter test emits.
@@ -106,6 +119,8 @@ func dueItems(t *testing.T, repo *webhooks.Repository) []webhooks.QueueItem {
 // are present, receivedAt is the RFC3339 UTC stamp), inside an envelope that
 // carries the event, the webhook and the local device.
 func TestEmitSmsReceived_RawEnvelopeIsByteIdenticalToThePayload(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, _, devicesSvc := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 
@@ -179,6 +194,8 @@ func TestEmitSmsReceived_RawEnvelopeIsByteIdenticalToThePayload(t *testing.T) {
 // sms:data-received wire contract: the base64 NO_WRAP payload of the assembled
 // octets and no message field at all.
 func TestEmitSmsDataReceived_RawEnvelopeIsByteIdenticalToThePayload(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, _, _ := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 
@@ -241,12 +258,17 @@ func TestEmitSmsDataReceived_RawEnvelopeIsByteIdenticalToThePayload(t *testing.T
 // byte-for-byte and X-Signature is the HMAC over exactly those bytes plus the
 // unix-seconds X-Timestamp.
 func TestEmitSmsReceived_PostsTheStoredBytesVerbatim(t *testing.T) {
+	t.Parallel()
+
 	config := runConfig(1)
 	config.SigningKey = testFixtureSigningKey
 	svc, repo, bunDB, _ := newInboundFixture(t, config)
 	ctx := context.Background()
 
-	log := &requestLog{}
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	server := newRequestServer(t, log, func(int) int { return http.StatusOK }, nil)
 
 	if err := svc.Replace(ctx, newWebhookDTO(
@@ -272,7 +294,12 @@ func TestEmitSmsReceived_PostsTheStoredBytesVerbatim(t *testing.T) {
 	raw := items[0].Payload
 
 	worker := startWorker(t, svc)
-	waitForStatus(t, runFixture{db: bunDB}, items[0].ID, webhooks.QueueStatusCompleted)
+	waitForStatus(t, runFixture{
+		service: nil,
+		repo:    nil,
+		db:      bunDB,
+		metrics: nil,
+	}, items[0].ID, webhooks.QueueStatusCompleted)
 	worker.stop(t)
 
 	requests := log.snapshot()
@@ -300,6 +327,8 @@ func TestEmitSmsReceived_PostsTheStoredBytesVerbatim(t *testing.T) {
 // served set suppresses exactly those webhooks (counted separately from the
 // enqueue verdicts).
 func TestEmitTracked_PerWebhookVerdictsAndSuppression(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, bunDB, _ := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 
@@ -362,6 +391,8 @@ func TestEmitTracked_PerWebhookVerdictsAndSuppression(t *testing.T) {
 // reported as an enqueue verdict and the suppression count equals the number
 // of matched webhooks.
 func TestEmitTracked_AllMatchedWebhooksSuppressed(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, _, _ := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 
@@ -392,6 +423,8 @@ func TestEmitTracked_AllMatchedWebhooksSuppressed(t *testing.T) {
 // notification with no registered webhook reports neither verdicts nor
 // suppressions, so the caller has nothing to mark.
 func TestEmitTracked_ZeroMatchesStaysEmpty(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, _, _ := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 

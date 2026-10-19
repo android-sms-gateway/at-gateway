@@ -1,3 +1,4 @@
+//nolint:paralleltest // every fixture swaps the process-global prometheus.DefaultRegisterer in newPingMetrics, so fixtures must not run concurrently
 package ping_test
 
 import (
@@ -176,7 +177,10 @@ func TestRun_NonPositiveIntervalDisablesEmission(t *testing.T) {
 func TestRun_PostsOneSignedEnvelopePerTick(t *testing.T) {
 	const interval = 25 * time.Millisecond
 
-	log := &requestLog{}
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	server := startEndpoint(t, log)
 
 	svc, bunDB := newPingFixture(t, deliveryConfig())
@@ -322,7 +326,19 @@ func newPingMetrics() *webhooks.Metrics {
 // registryConfig is the emission-only webhooks fixture: these tests enqueue
 // heartbeats and read the queue rows themselves, never deliver them.
 func registryConfig() webhooks.Config {
-	return webhooks.Config{SigningKey: testSigningKey}
+	return webhooks.Config{
+		RetryCount: 0,
+		SigningKey: testSigningKey,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
+		},
+	}
 }
 
 // deliveryConfig tunes the queue for the signed-POST test, where the webhooks
@@ -375,6 +391,7 @@ func startPingService(t *testing.T, service *webhooks.Service, interval time.Dur
 	handle := &pingHandle{
 		cancel: cancel,
 		done:   make(chan error, 1),
+		once:   sync.Once{},
 	}
 	go func() {
 		handle.done <- pingSvc.Run(ctx)
@@ -417,6 +434,7 @@ func startWorker(t *testing.T, service *webhooks.Service) *workerHandle {
 	handle := &workerHandle{
 		cancel: cancel,
 		done:   make(chan error, 1),
+		once:   sync.Once{},
 	}
 	go func() {
 		handle.done <- service.Run(ctx)

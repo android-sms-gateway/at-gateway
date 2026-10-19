@@ -1,3 +1,4 @@
+//nolint:paralleltest // every fixture swaps the process-global prometheus.DefaultRegisterer in newHandlerMetrics, so fixtures must not run concurrently
 package messages_test
 
 import (
@@ -107,7 +108,19 @@ func newHandlerWithRepo(t *testing.T) (*fiber.App, *messages.Repository, *bun.DB
 	metrics := newHandlerMetrics()
 
 	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{SigningKey: "messages-handler-test-key"},
+		webhooks.Config{
+			SigningKey: "messages-handler-test-key",
+			RetryCount: 0,
+			Queue: webhooks.QueueConfig{
+				BatchSize:              0,
+				RequestTimeout:         0,
+				DialTimeout:            0,
+				RetryBaseDelay:         0,
+				IdleDelay:              0,
+				StuckProcessingTimeout: 0,
+				CleanupRetention:       0,
+			},
+		},
 		webhooks.NewRepository(bunDB),
 		devicesSvc,
 		storageSvc,
@@ -118,7 +131,11 @@ func newHandlerWithRepo(t *testing.T) (*fiber.App, *messages.Repository, *bun.DB
 		t.Fatalf("create webhooks service: %v", err)
 	}
 	messagesSvc := messages.NewService(
-		messages.Config{},
+		messages.Config{
+			PollInterval:  0,
+			MaxSegments:   0,
+			DefaultRegion: "",
+		},
 		repo,
 		devicesSvc,
 		nil,
@@ -312,11 +329,21 @@ func newListInput(extID string) *messages.MessageInput {
 	deviceID := "device-1"
 	return &messages.MessageInput{
 		MessageContent: messages.MessageContent{
-			TextContent: &smsgateway.TextMessage{Text: "hello"},
+			TextContent:       &smsgateway.TextMessage{Text: "hello"},
+			DataContent:       nil,
+			MultimediaContent: nil,
+		},
+		MessageOptions: messages.MessageOptions{
+			SimNumber:          nil,
+			WithDeliveryReport: nil,
+			ValidUntil:         nil,
+			ScheduleAt:         nil,
+			Priority:           0,
 		},
 		ExtID:        extID,
 		DeviceID:     &deviceID,
 		PhoneNumbers: []string{"+79990001111"},
+		IsEncrypted:  false,
 	}
 }
 

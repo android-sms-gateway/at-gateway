@@ -1,3 +1,4 @@
+//nolint:paralleltest // control and treatment subtests share one global Prometheus registry: control asserts the counter did not move while treatment moves it
 package modem_test
 
 import (
@@ -72,7 +73,20 @@ func runInboxGraph(t *testing.T, withRun bool) {
 	t.Helper()
 
 	webhooksSvc, _ := newWebhookFixture(t)
-	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), modem.NewTestMetrics(), webhooksSvc)
+	modemSvc := modem.NewService(modem.Config{
+		Port:           "",
+		BaudRate:       0,
+		InitTimeout:    0,
+		CommandTimeout: 0,
+		Cmgd: modem.CmgdConfig{
+			RetryAttempts: 0,
+			RetryBackoff:  0,
+		},
+		Store: modem.StoreConfig{
+			Memory:        "",
+			SweepInterval: 0,
+		},
+	}, zap.NewNop(), modem.NewTestMetrics(), webhooksSvc)
 
 	app := fx.New(
 		fx.NopLogger,

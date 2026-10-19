@@ -48,6 +48,8 @@ const (
 // width-EXPLICIT accessors, so the 8-bit and 16-bit references of the SAME
 // numeric value (0x42) stay distinguishable.
 func TestDecodeInboundSMS_TextFixtures(t *testing.T) {
+	t.Parallel()
+
 	wantAt := time.Date(2026, time.October, 2, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -96,6 +98,8 @@ func TestDecodeInboundSMS_TextFixtures(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			part, err := modem.DecodeInboundSMS(tt.pdu)
 			if err != nil {
 				t.Fatalf("DecodeInboundSMS: %v", err)
@@ -132,6 +136,8 @@ func TestDecodeInboundSMS_TextFixtures(t *testing.T) {
 // reading an arbitrary octet. The 8-bit alphabet leaves the payload as raw
 // octets, which is what sms:data-received base64-encodes.
 func TestDecodeInboundSMS_PortFixtures(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name       string
 		pdu        string
@@ -152,6 +158,8 @@ func TestDecodeInboundSMS_PortFixtures(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			part, err := modem.DecodeInboundSMS(tt.pdu)
 			if err != nil {
 				t.Fatalf("DecodeInboundSMS: %v", err)
@@ -179,6 +187,8 @@ func TestDecodeInboundSMS_PortFixtures(t *testing.T) {
 // still decodes, so the caller omits the timestamp component from the
 // message id instead of pinning a wrong one.
 func TestDecodeInboundSMS_MalformedSCTSReportsTimestampInvalid(t *testing.T) {
+	t.Parallel()
+
 	part, err := modem.DecodeInboundSMS(inboundBadSCTSPDU)
 	if err != nil {
 		t.Fatalf("DecodeInboundSMS: %v", err)
@@ -202,6 +212,8 @@ func TestDecodeInboundSMS_MalformedSCTSReportsTimestampInvalid(t *testing.T) {
 // PDU, a TPDU that is not an SMS-DELIVER and a non-hex body all fail instead
 // of yielding a half-decoded part the webhook layer would emit.
 func TestDecodeInboundSMS_MalformedInputs(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		pdu     string
@@ -236,6 +248,8 @@ func TestDecodeInboundSMS_MalformedInputs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			part, err := modem.DecodeInboundSMS(tt.pdu)
 			if err == nil {
 				t.Fatalf("DecodeInboundSMS(%q) = %+v, want error", tt.pdu, part)
@@ -253,6 +267,8 @@ func TestDecodeInboundSMS_MalformedInputs(t *testing.T) {
 // return) fails with the sentinel, matchable with [errors.Is] per the
 // sentinel-error convention.
 func TestDecodeInboundSMS_NoDeliverSentinel(t *testing.T) {
+	t.Parallel()
+
 	_, err := modem.DecodeInboundSMS(statusReportPDU)
 	if !errors.Is(err, modem.ErrNotSmsDeliver) {
 		t.Fatalf("error = %v, want ErrNotSmsDeliver", err)

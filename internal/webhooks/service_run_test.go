@@ -30,6 +30,8 @@ const (
 // signature is bare lowercase hex HMAC-SHA256 over body concatenated with the
 // unix-seconds timestamp, with no prefix or separator.
 func TestSignPayloadGolden(t *testing.T) {
+	t.Parallel()
+
 	const timestamp = "1760000000"
 	const want = "e5e383e00d5721f1f0f6d95b7363c370ee242f8e671c9f8615e6e4ab5a404889"
 
@@ -227,6 +229,7 @@ func startWorker(t *testing.T, service *webhooks.Service) *workerHandle {
 	handle := &workerHandle{
 		cancel: cancel,
 		done:   make(chan error, 1),
+		once:   sync.Once{},
 	}
 	go func() {
 		handle.done <- service.Run(ctx)
@@ -295,7 +298,12 @@ func enqueueRunItem(t *testing.T, fixture runFixture, id, url string, createdAt,
 }
 
 func TestRun_DeliversStoredEnvelopeAndSignsEveryPost(t *testing.T) {
-	log := &requestLog{}
+	t.Parallel()
+
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	server := newRequestServer(t, log, func(int) int { return http.StatusOK }, nil)
 	fixture := newRunFixture(t, runConfig(1))
 	now := time.Now().UTC()
@@ -318,7 +326,12 @@ func TestRun_DeliversStoredEnvelopeAndSignsEveryPost(t *testing.T) {
 }
 
 func TestRun_FailedThenSuccessfulRetry(t *testing.T) {
-	log := &requestLog{}
+	t.Parallel()
+
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	firstRequest := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	server := newRequestServer(t, log, func(index int) int {
@@ -370,9 +383,16 @@ func TestRun_FailedThenSuccessfulRetry(t *testing.T) {
 }
 
 func TestRun_NonSuccessStatusesShareRetryPolicy(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range []int{http.StatusBadRequest, http.StatusInternalServerError} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			log := &requestLog{}
+			t.Parallel()
+
+			log := &requestLog{
+				mu:       sync.Mutex{},
+				requests: []capturedRequest{},
+			}
 			server := newRequestServer(t, log, func(int) int { return status }, nil)
 			fixture := newRunFixture(t, runConfig(1))
 			now := time.Now().UTC()
@@ -398,9 +418,14 @@ func TestRun_NonSuccessStatusesShareRetryPolicy(t *testing.T) {
 }
 
 func TestRun_RetryScheduleUsesClaimTimeExponential(t *testing.T) {
+	t.Parallel()
+
 	config := runConfig(2)
 	config.Queue.RetryBaseDelay = 200 * time.Millisecond
-	log := &requestLog{}
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	firstRequest := make(chan struct{})
 	secondRequest := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -462,7 +487,12 @@ func TestRun_RetryScheduleUsesClaimTimeExponential(t *testing.T) {
 }
 
 func TestRun_PermanentFailureStopsAtRetryCap(t *testing.T) {
-	log := &requestLog{}
+	t.Parallel()
+
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	server := newRequestServer(t, log, func(int) int { return http.StatusServiceUnavailable }, nil)
 	fixture := newRunFixture(t, runConfig(2))
 	now := time.Now().UTC()
@@ -489,7 +519,12 @@ func TestRun_PermanentFailureStopsAtRetryCap(t *testing.T) {
 }
 
 func TestRun_NetworkErrorIsRetryable(t *testing.T) {
-	log := &requestLog{}
+	t.Parallel()
+
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
 	server := newTransportErrorServer(t, log)
 	fixture := newRunFixture(t, runConfig(1))
 	now := time.Now().UTC()
@@ -513,6 +548,8 @@ func TestRun_NetworkErrorIsRetryable(t *testing.T) {
 }
 
 func TestRun_RecoversStuckProcessingBeforePolling(t *testing.T) {
+	t.Parallel()
+
 	config := runConfig(0)
 	config.Queue.BatchSize = 0
 	config.Queue.IdleDelay = 100 * time.Millisecond
@@ -534,6 +571,8 @@ func TestRun_RecoversStuckProcessingBeforePolling(t *testing.T) {
 }
 
 func TestRun_CleansOldTerminalRowsWhenIdle(t *testing.T) {
+	t.Parallel()
+
 	config := runConfig(0)
 	config.Queue.CleanupRetention = 20 * time.Millisecond
 	config.Queue.IdleDelay = 5 * time.Millisecond
@@ -562,6 +601,8 @@ func TestRun_CleansOldTerminalRowsWhenIdle(t *testing.T) {
 }
 
 func TestRetryDelayIsExponential(t *testing.T) {
+	t.Parallel()
+
 	base := 7 * time.Millisecond
 	for retryCount, want := range []time.Duration{base, 2 * base, 4 * base, 8 * base} {
 		if got := webhooks.RetryDelayForTest(base, retryCount); got != want {

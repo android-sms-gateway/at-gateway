@@ -37,6 +37,8 @@ func reportedSim() webhooks.SimCardInfo {
 // attribute), inside an envelope carrying the event, the webhook and the local
 // device.
 func TestEmitAppStarted_RawEnvelopeIsByteIdenticalToThePayload(t *testing.T) {
+	t.Parallel()
+
 	svc, repo, _, devicesSvc := newInboundFixture(t, inboundConfig())
 	ctx := context.Background()
 
@@ -106,6 +108,8 @@ func TestEmitAppStarted_RawEnvelopeIsByteIdenticalToThePayload(t *testing.T) {
 // empty card list drops the simCards key altogether (the payload contract
 // allows a device that reports no SIM at all).
 func TestEmitAppStarted_SimCardMapping(t *testing.T) {
+	t.Parallel()
+
 	secondSlot := webhooks.SimCardInfo{
 		SlotIndex:   1,
 		SimNumber:   2,
@@ -183,6 +187,8 @@ func TestEmitAppStarted_SimCardMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, repo, _, _ := newInboundFixture(t, inboundConfig())
 			ctx := context.Background()
 
@@ -234,6 +240,8 @@ func TestEmitAppStarted_SimCardMapping(t *testing.T) {
 // queue write at all (emit() no-ops on a non-matching registry), and a webhook
 // registered for a DIFFERENT event is never served.
 func TestEmitAppStarted_NoRegisteredWebhookStoresNothing(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		events []smsgateway.WebhookEvent
@@ -247,6 +255,8 @@ func TestEmitAppStarted_NoRegisteredWebhookStoresNothing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, repo, _, _ := newInboundFixture(t, inboundConfig())
 			ctx := context.Background()
 

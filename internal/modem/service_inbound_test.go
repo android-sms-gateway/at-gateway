@@ -2,6 +2,7 @@ package modem_test
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +14,15 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/modem/port"
 	"go.uber.org/zap"
 )
+
+// TestMain warms the GSM-7 charset tables on this single goroutine before any
+// test runs: modem.NewService calls WarmGSMCharsets, the upstream library
+// builds those tables lazily without synchronization, and the parallel tests
+// in this package construct services concurrently.
+func TestMain(m *testing.M) {
+	modem.WarmGSMCharsets()
+	os.Exit(m.Run())
+}
 
 // Drop reasons, mirrored from the production labels so a rename breaks the
 // test instead of silently detaching the metric.
@@ -297,6 +307,9 @@ func newInboundServiceWithTick(
 	scratch := &servicePort{&scriptedModem{
 		responses: make(chan []byte, 1024),
 		onWrite:   scripted.respond,
+		mu:        sync.Mutex{},
+		writes:    []string{},
+		closed:    false,
 	}}
 
 	// The scripted modem reaches ready state, so the service gets a real
@@ -385,6 +398,10 @@ func inboundServiceConfig() modem.Config {
 			RetryAttempts: 1,
 			RetryBackoff:  time.Millisecond,
 		},
+		Store: modem.StoreConfig{
+			Memory:        "",
+			SweepInterval: 0,
+		},
 	}
 }
 
@@ -394,7 +411,22 @@ func inboundServiceConfig() modem.Config {
 // "+CNMI=2,1,0,1,0" (mt=1: store + emit +CMTI) and +CMT is no longer
 // registered, so the head carries no PII at all.
 func TestInboundRoute_ReadsDecodesAndDeletes(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 
 	pushURC(scratch, `+CMTI: "ME",1`)
@@ -450,6 +482,8 @@ func TestInboundRoute_ReadsDecodesAndDeletes(t *testing.T) {
 // every decoded part over verbatim - multi-part concat (both widths) and
 // port-addressed data included - because REASSEMBLY belongs to the consumer.
 func TestInboundRoute_EmitsEveryPartUnchanged(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		pdu         string
@@ -462,12 +496,16 @@ func TestInboundRoute_EmitsEveryPartUnchanged(t *testing.T) {
 			name:        "concat 8-bit part 1",
 			pdu:         inboundConcat8Part1PDU,
 			wantContent: "abcdefgh",
+			wantPort:    0,
+			wantPorted:  false,
 			wantConcat:  &modem.ConcatRef{Segments: 2, Sequence: 1, Ref: 0x42, RefWidth: 8},
 		},
 		{
 			name:        "concat 16-bit part 1",
 			pdu:         inboundConcat16Part1PDU,
 			wantContent: "abcdefgh",
+			wantPort:    0,
+			wantPorted:  false,
 			wantConcat:  &modem.ConcatRef{Segments: 2, Sequence: 1, Ref: 0x42, RefWidth: 16},
 		},
 		{
@@ -476,6 +514,7 @@ func TestInboundRoute_EmitsEveryPartUnchanged(t *testing.T) {
 			wantContent: "\xca\xfe",
 			wantPort:    22,
 			wantPorted:  true,
+			wantConcat:  nil,
 		},
 		{
 			name:        "data SMS with 16-bit port",
@@ -483,12 +522,28 @@ func TestInboundRoute_EmitsEveryPartUnchanged(t *testing.T) {
 			wantContent: "\xca\xfe\xba\xbe",
 			wantPort:    80,
 			wantPorted:  true,
+			wantConcat:  nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scripted := &storeModem{defaultPDU: tt.pdu}
+			t.Parallel()
+
+			scripted := &storeModem{
+				defaultPDU:     tt.pdu,
+				stores:         nil,
+				listErrors:     nil,
+				mu:             sync.Mutex{},
+				selected:       "",
+				reads:          0,
+				deletes:        0,
+				lists:          0,
+				deleteFailures: 0,
+				deletedIndexes: []int{},
+				deletedStores:  []string{},
+				listedStores:   []string{},
+			}
 			service, _, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 
 			pushURC(scratch, `+CMTI: "ME",1`)
@@ -525,7 +580,22 @@ func TestInboundRoute_EmitsEveryPartUnchanged(t *testing.T) {
 // order: a stored body that cannot be decoded never reaches the consumer AND
 // is not deleted, so the entry stays available for the modem to re-notify.
 func TestInboundRoute_UndecodablePDUIsDroppedBeforeTheDelete(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU[:30]}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU[:30],
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 
 	pushURC(scratch, `+CMTI: "ME",1`)
@@ -547,7 +617,22 @@ func TestInboundRoute_UndecodablePDUIsDroppedBeforeTheDelete(t *testing.T) {
 // a modem that rejects +CMGR leaves the consumer untouched and counts the
 // read failure.
 func TestInboundRoute_UnreadableStoreEntryIsDropped(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 
 	// +CMGR=<index> with index 0 makes the scripted modem answer +CMS ERROR.
@@ -572,7 +657,22 @@ func TestInboundRoute_UnreadableStoreEntryIsDropped(t *testing.T) {
 // (AT+CMGL=4), read, delivered and deleted. Without the sweep such an entry sits
 // in the store forever, because +CMTI is emitted only for NEW messages.
 func TestStoreSweep_RecoversRetainedEntry(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU, stores: map[string][]int{"SM": {1}}}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         map[string][]int{"SM": {1}},
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	cfg := inboundServiceConfig()
 	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
 	service, metrics, _ := newInboundService(t, cfg, scripted)
@@ -596,7 +696,22 @@ func TestStoreSweep_RecoversRetainedEntry(t *testing.T) {
 // slot cannot accumulate (the +CMTI path deliberately keeps it for the sweep to
 // reclaim).
 func TestStoreSweep_DeletesUndecodableEntry(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU[:30], stores: map[string][]int{"SM": {1}}}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU[:30],
+		stores:         map[string][]int{"SM": {1}},
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	cfg := inboundServiceConfig()
 	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
 	service, metrics, _ := newInboundService(t, cfg, scripted)
@@ -622,9 +737,21 @@ func TestStoreSweep_DeletesUndecodableEntry(t *testing.T) {
 // to that store strands an entry retained in any store named EARLIER: the store
 // fills and its entry is never re-read or deleted.
 func TestStoreSweep_RecoversEntryFromEveryNotifiedStore(t *testing.T) {
+	t.Parallel()
+
 	scripted := &storeModem{
-		defaultPDU: inboundTextPDU,
-		stores:     map[string][]int{"SM": {1}, "ME": {2}},
+		defaultPDU:     inboundTextPDU,
+		stores:         map[string][]int{"SM": {1}, "ME": {2}},
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
 	}
 	cfg := inboundServiceConfig()
 	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
@@ -661,10 +788,21 @@ func TestStoreSweep_RecoversEntryFromEveryNotifiedStore(t *testing.T) {
 // cannot be listed is SKIPPED rather than aborting the pass: one unreadable
 // store must not make the retained entries of every other store unrecoverable.
 func TestStoreSweep_ListFailureDoesNotBlindOtherStores(t *testing.T) {
+	t.Parallel()
+
 	scripted := &storeModem{
-		defaultPDU: inboundTextPDU,
-		stores:     map[string][]int{"SM": {1}, "ME": {2}},
-		listErrors: map[string]bool{"SM": true},
+		defaultPDU:     inboundTextPDU,
+		stores:         map[string][]int{"SM": {1}, "ME": {2}},
+		listErrors:     map[string]bool{"SM": true},
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
 	}
 	cfg := inboundServiceConfig()
 	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
@@ -691,7 +829,22 @@ func TestStoreSweep_ListFailureDoesNotBlindOtherStores(t *testing.T) {
 // sweep entirely: the store is never listed, so a modem that does not answer
 // +CMGL is unaffected.
 func TestStoreSweep_DisabledByDefault(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU, stores: map[string][]int{"SM": {1}}}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         map[string][]int{"SM": {1}},
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	_, metrics, _ := newInboundService(t, inboundServiceConfig(), scripted)
 
 	// Give a (disabled) sweep ample time to have fired if it were active.
@@ -706,7 +859,22 @@ func TestStoreSweep_DisabledByDefault(t *testing.T) {
 
 // TestInboundRoute_MalformedHeadIsDropped pins the head-parse failure branch.
 func TestInboundRoute_MalformedHeadIsDropped(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	_, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 
 	pushURC(scratch, `+CMTI: "XX",1`)
@@ -724,9 +892,24 @@ func TestInboundRoute_MalformedHeadIsDropped(t *testing.T) {
 // up and further indications are dropped instead of spawning unbounded
 // goroutines. The gauge tracks the occupancy.
 func TestInboundRoute_HandlerSaturationDropsIndications(t *testing.T) {
+	t.Parallel()
+
 	// Every handler that is admitted parks in its CMGD retry backoff, which is
 	// how a real modem behaves when it refuses to delete a store entry.
-	scripted := &storeModem{defaultPDU: inboundTextPDU, deleteFailures: 1000}
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 1000,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	config := inboundServiceConfig()
 	config.Cmgd = modem.CmgdConfig{RetryAttempts: 2, RetryBackoff: 2 * time.Second}
 	service, metrics, scratch := newInboundService(t, config, scripted)
@@ -797,7 +980,22 @@ func fillInboundChannel(t *testing.T, service *modem.Service, scratch *servicePo
 // re-notified and the recoverable drop would become permanent loss. The failure
 // is counted by reason and the entry stays readable in the modem store.
 func TestInboundRoute_FullConsumerChannelKeepsTheStoreEntry(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 	fillInboundChannel(t, service, scratch, scripted)
 
@@ -836,7 +1034,22 @@ func TestInboundRoute_FullConsumerChannelKeepsTheStoreEntry(t *testing.T) {
 // third, so the retry loop cannot run forever. The final loss is counted apart
 // from the retryable drop, which is what an operator alerts on.
 func TestInboundRoute_ChannelFullRetryBudgetIsBounded(t *testing.T) {
-	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	t.Parallel()
+
+	scripted := &storeModem{
+		defaultPDU:     inboundTextPDU,
+		stores:         nil,
+		listErrors:     nil,
+		mu:             sync.Mutex{},
+		selected:       "",
+		reads:          0,
+		deletes:        0,
+		lists:          0,
+		deleteFailures: 0,
+		deletedIndexes: []int{},
+		deletedStores:  []string{},
+		listedStores:   []string{},
+	}
 	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
 	fillInboundChannel(t, service, scratch, scripted)
 
@@ -893,8 +1106,25 @@ func TestInboundRoute_ChannelFullRetryBudgetIsBounded(t *testing.T) {
 // persistent failure counts store_command_failures_total{op="cmgd"} - while
 // the part has already reached the consumer (the delete runs last).
 func TestInboundRoute_CMGDRetriesExponentialBackoff(t *testing.T) {
+	t.Parallel()
+
 	t.Run("recovers within the attempts", func(t *testing.T) {
-		scripted := &storeModem{defaultPDU: inboundTextPDU, deleteFailures: 2}
+		t.Parallel()
+
+		scripted := &storeModem{
+			defaultPDU:     inboundTextPDU,
+			stores:         nil,
+			listErrors:     nil,
+			mu:             sync.Mutex{},
+			selected:       "",
+			reads:          0,
+			deletes:        0,
+			lists:          0,
+			deleteFailures: 2,
+			deletedIndexes: []int{},
+			deletedStores:  []string{},
+			listedStores:   []string{},
+		}
 		config := inboundServiceConfig()
 		config.Cmgd = modem.CmgdConfig{RetryAttempts: 3, RetryBackoff: 5 * time.Millisecond}
 		service, metrics, scratch := newInboundService(t, config, scripted)
@@ -923,7 +1153,22 @@ func TestInboundRoute_CMGDRetriesExponentialBackoff(t *testing.T) {
 	})
 
 	t.Run("exhausts the attempts", func(t *testing.T) {
-		scripted := &storeModem{defaultPDU: inboundTextPDU, deleteFailures: 10}
+		t.Parallel()
+
+		scripted := &storeModem{
+			defaultPDU:     inboundTextPDU,
+			stores:         nil,
+			listErrors:     nil,
+			mu:             sync.Mutex{},
+			selected:       "",
+			reads:          0,
+			deletes:        0,
+			lists:          0,
+			deleteFailures: 10,
+			deletedIndexes: []int{},
+			deletedStores:  []string{},
+			listedStores:   []string{},
+		}
 		config := inboundServiceConfig()
 		config.Cmgd = modem.CmgdConfig{RetryAttempts: 3, RetryBackoff: 5 * time.Millisecond}
 		service, metrics, scratch := newInboundService(t, config, scripted)
@@ -948,6 +1193,8 @@ func TestInboundRoute_CMGDRetriesExponentialBackoff(t *testing.T) {
 // indication delivered after the disconnect (or before Run) logs and returns
 // without touching the store or panicking.
 func TestInboundRoute_NoCommandsIsNotConnected(t *testing.T) {
+	t.Parallel()
+
 	metrics := modem.NewTestMetrics()
 	service := modem.NewService(inboundServiceConfig(), zap.NewNop(), metrics, nil)
 
@@ -971,6 +1218,8 @@ func TestInboundRoute_NoCommandsIsNotConnected(t *testing.T) {
 // TestInboundRoute_EmptyIndicationIsDropped pins the empty-head branch, which
 // the library can produce when an indication carries no line at all.
 func TestInboundRoute_EmptyIndicationIsDropped(t *testing.T) {
+	t.Parallel()
+
 	metrics := modem.NewTestMetrics()
 	service := modem.NewService(inboundServiceConfig(), zap.NewNop(), metrics, nil)
 
@@ -986,6 +1235,8 @@ func TestInboundRoute_EmptyIndicationIsDropped(t *testing.T) {
 // swallowed and counted instead of taking the process down (a test-binary
 // crash would fail this test loudly).
 func TestRecoverInbound_SwallowsHandlerPanic(t *testing.T) {
+	t.Parallel()
+
 	metrics := modem.NewTestMetrics()
 	service := modem.NewService(inboundServiceConfig(), zap.NewNop(), metrics, nil)
 

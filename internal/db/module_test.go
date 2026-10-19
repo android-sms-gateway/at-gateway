@@ -114,6 +114,8 @@ func indexSQL(t *testing.T, sqldb *sql.DB, name string) string {
 // composition starts, and the embedded migration created the messages table
 // plus both indexes.
 func TestModule_BindingsAndMigrationsApplied(t *testing.T) {
+	t.Parallel()
+
 	sqldb, bundb := newStartedApp(t)
 
 	if bundb == nil {
@@ -142,6 +144,8 @@ func TestModule_BindingsAndMigrationsApplied(t *testing.T) {
 // TestModule_UpIdempotent pins goose as schema authority: a second Up over an
 // already-migrated database applies zero results.
 func TestModule_UpIdempotent(t *testing.T) {
+	t.Parallel()
+
 	sqldb, _ := newStartedApp(t)
 
 	provider, err := goose.NewProvider(database.DialectSQLite3, sqldb, goosefx.Storage(migrations.FS))
@@ -163,6 +167,8 @@ func TestModule_UpIdempotent(t *testing.T) {
 // Down only pops the newest migration - with the webhooks migration stacked on
 // top of messages, one Down would leave the messages schema behind.
 func TestModule_DownRemovesSchema(t *testing.T) {
+	t.Parallel()
+
 	sqldb, _ := newStartedApp(t)
 
 	provider, err := goose.NewProvider(database.DialectSQLite3, sqldb, goosefx.Storage(migrations.FS))

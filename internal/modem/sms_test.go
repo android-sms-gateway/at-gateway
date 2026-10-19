@@ -176,6 +176,9 @@ func newCommands(t *testing.T, respond func(string) [][]byte) (*modem.Commands, 
 	m := &scriptedModem{
 		responses: make(chan []byte, 256),
 		onWrite:   respond,
+		mu:        sync.Mutex{},
+		writes:    []string{},
+		closed:    false,
 	}
 
 	a := at.New(m, at.WithTimeout(commandTimeout))
@@ -212,8 +215,12 @@ func newTestMetrics() *modem.Metrics {
 	)
 
 	return &modem.Metrics{
-		CommandsTotal:   commandsTotal,
-		CommandDuration: commandDuration,
+		CommandsTotal:               commandsTotal,
+		CommandDuration:             commandDuration,
+		ModemState:                  nil,
+		SignalQuality:               nil,
+		ReconnectsTotal:             nil,
+		DeliveryReportsDroppedTotal: nil,
 	}
 }
 
@@ -249,6 +256,8 @@ func (v sendVector) writeLines() []string {
 // septets) becomes ONE PDU exchange carrying the phone as a TP-DA inside the
 // TPDU - the phone never appears on the command line in PDU mode.
 func TestSendSMS_SinglePart(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("1"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -279,6 +288,8 @@ func TestSendSMS_SinglePart(t *testing.T) {
 // text cannot be GSM-7 encoded, so the DCS flips to UCS-2 (0x08) and each
 // character takes two octets.
 func TestSendSMS_UCS2Fallback(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("1"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -311,6 +322,8 @@ func TestSendSMS_UCS2Fallback(t *testing.T) {
 // parts are sent back-to-back as separate +CMGS exchanges and both message
 // references are returned.
 func TestSendSMS_MultiPart(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("10", "11"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -352,6 +365,8 @@ func TestSendSMS_MultiPart(t *testing.T) {
 // (0x01 -> 0x21); the message reference the modem echoes back is the TP-MR
 // the SC will answer in the status report.
 func TestSendSMS_SinglePartDeliveryReport(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("1"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -383,6 +398,8 @@ func TestSendSMS_SinglePartDeliveryReport(t *testing.T) {
 // bit (0x41 -> 0x61); part one is untouched. The SC therefore answers at
 // most one status report, and its TP-MR is the last returned reference.
 func TestSendSMS_MultiPartDeliveryReportLastPart(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("10", "11"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -424,6 +441,8 @@ func TestSendSMS_MultiPartDeliveryReportLastPart(t *testing.T) {
 // reference, or a receiving phone could interleave the parts. The reference
 // byte (offset 11 in the UDH, right after 050003) advances 01 -> 02.
 func TestSendSMS_ConcatRefIncrements(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("1", "2", "3", "4"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -453,9 +472,14 @@ func TestSendSMS_ConcatRefIncrements(t *testing.T) {
 // handle that never ran Init fails with ErrModemNotStarted and writes
 // nothing to the wire.
 func TestSendSMS_NotInitialized(t *testing.T) {
+	t.Parallel()
+
 	m := &scriptedModem{
 		responses: make(chan []byte, 256),
 		onWrite:   func(string) [][]byte { return nil },
+		mu:        sync.Mutex{},
+		writes:    []string{},
+		closed:    false,
 	}
 	defer m.Close()
 
@@ -477,6 +501,8 @@ func TestSendSMS_NotInitialized(t *testing.T) {
 // TestSendSMS_ContextCanceled pins the ctx gate: a canceled context rejects
 // the send before any encode or modem traffic.
 func TestSendSMS_ContextCanceled(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder("1"))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -494,6 +520,8 @@ func TestSendSMS_ContextCanceled(t *testing.T) {
 // TestSendSMS_EmptyText pins the encode gate: an empty text fails with
 // ErrInvalidText BEFORE any +CMGS traffic.
 func TestSendSMS_EmptyText(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -512,6 +540,8 @@ func TestSendSMS_EmptyText(t *testing.T) {
 // parts (the 8-bit sequence number would wrap to 0) is rejected before any
 // modem traffic.
 func TestSendSMS_ProtocolCeiling(t *testing.T) {
+	t.Parallel()
+
 	commands, m := newCommands(t, smsResponder())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -535,6 +565,8 @@ func TestSendSMS_ProtocolCeiling(t *testing.T) {
 // send: a +CMS ERROR maps to ErrSendFailed and stays [errors.As]-able as an
 // at.CMSError; no message reference is returned.
 func TestSendSMS_RejectedByModem(t *testing.T) {
+	t.Parallel()
+
 	respond := func(w string) [][]byte {
 		if resps := initResponder(w); resps != nil {
 			return resps
@@ -572,6 +604,8 @@ func TestSendSMS_RejectedByModem(t *testing.T) {
 // part 2 of 2 is rejected after part 1 was accepted, the reference of the
 // accepted part is returned together with an error naming the failing part.
 func TestSendSMS_MidSequenceRejection(t *testing.T) {
+	t.Parallel()
+
 	commands, _ := newCommands(t, smsResponder("7"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -603,6 +637,8 @@ func TestSendSMS_MidSequenceRejection(t *testing.T) {
 // arms the drain; the next send drains the stale response window with a bare
 // AT command before its own +CMGS traffic.
 func TestSendSMS_TimeoutDrain(t *testing.T) {
+	t.Parallel()
+
 	silentSends := 1
 	respond := func(w string) [][]byte {
 		switch {
@@ -640,6 +676,8 @@ func TestSendSMS_TimeoutDrain(t *testing.T) {
 // acknowledges with OK but never emits a +CMGS reference line yields the
 // errNoCMGSLine failure message.
 func TestSendSMS_NoCMGSLine(t *testing.T) {
+	t.Parallel()
+
 	respond := func(w string) [][]byte {
 		if resps := initResponder(w); resps != nil {
 			return resps
@@ -672,6 +710,8 @@ func TestSendSMS_NoCMGSLine(t *testing.T) {
 // answers +CNUM with no line at all) degrades to an empty phone number rather
 // than failing the query.
 func TestGetSimInfo(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		cnumLine       string
@@ -703,6 +743,8 @@ func TestGetSimInfo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			commands, _ := newCommands(t, simResponder(
 				tt.cnumLine,
 				"+CCID: "+tt.wantICCID,

@@ -52,7 +52,9 @@ func (m *storeSelectModem) respond(w string) [][]byte {
 // is selected first via +CPMS - and selected only when it CHANGES (a second
 // read of the same store must not re-issue +CPMS).
 func TestReadStoredMessage_SelectsNotifiedStoreAndCaches(t *testing.T) {
-	modem := &storeSelectModem{}
+	t.Parallel()
+
+	modem := &storeSelectModem{selections: []string{}, cmglLines: nil}
 	commands, scratch := newCommands(t, modem.respond)
 
 	for _, index := range []int{1, 2} {
@@ -79,7 +81,9 @@ func TestReadStoredMessage_SelectsNotifiedStoreAndCaches(t *testing.T) {
 // the preferred store, so a retried delete after a re-selection targets the
 // same store the read used.
 func TestDeleteStoredMessage_SelectsNotifiedStore(t *testing.T) {
-	modem := &storeSelectModem{}
+	t.Parallel()
+
+	modem := &storeSelectModem{selections: []string{}, cmglLines: nil}
 	commands, scratch := newCommands(t, modem.respond)
 
 	if err := commands.DeleteStoredMessage("MT", 7); err != nil {
@@ -99,7 +103,9 @@ func TestDeleteStoredMessage_SelectsNotifiedStore(t *testing.T) {
 // messages of the preferred store and the <index> of every "+CMGL:" header is
 // returned, while a malformed header is skipped rather than aborting.
 func TestListStoredMessages(t *testing.T) {
-	modem := &storeSelectModem{cmglLines: []string{
+	t.Parallel()
+
+	modem := &storeSelectModem{selections: []string{}, cmglLines: []string{
 		`+CMGL: 2,1,"",42`,
 		inboundTextPDU,
 		`+CMGL: 5,1,"",42`,
@@ -180,6 +186,8 @@ func (r *storeResponder) respond(w string) [][]byte {
 // heads must be DROPPED before pairing: each leak shape below would otherwise
 // shift the parse and yield the wrong body (or none).
 func TestReadStoredMessage_DropsLeakedURCHeads(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		lines []string
@@ -220,7 +228,9 @@ func TestReadStoredMessage_DropsLeakedURCHeads(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			responder := &storeResponder{readLines: tt.lines}
+			t.Parallel()
+
+			responder := &storeResponder{readLines: tt.lines, reads: 0, deletes: 0}
 			commands, scratch := newCommands(t, responder.respond)
 
 			got, err := commands.ReadStoredMessage("SM", 3)
@@ -248,11 +258,13 @@ func TestReadStoredMessage_DropsLeakedURCHeads(t *testing.T) {
 // positionally - after the unsolicited heads were dropped - so the PDU is
 // recovered and the header's <length> field is never mistaken for it.
 func TestReadStoredMessage_PositionalBodyLine(t *testing.T) {
+	t.Parallel()
+
 	responder := &storeResponder{readLines: []string{
 		"+CREG: 1",
 		cmgrHeader,
 		inboundTextPDU,
-	}}
+	}, reads: 0, deletes: 0}
 	commands, _ := newCommands(t, responder.respond)
 
 	got, err := commands.ReadStoredMessage("SM", 1)
@@ -268,6 +280,8 @@ func TestReadStoredMessage_PositionalBodyLine(t *testing.T) {
 // response (a modem that answered but returned no PDU) is rejected instead of
 // decoding an empty body into a webhook event.
 func TestReadStoredMessage_MissingPDULine(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		lines []string
@@ -280,7 +294,9 @@ func TestReadStoredMessage_MissingPDULine(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			responder := &storeResponder{readLines: tt.lines}
+			t.Parallel()
+
+			responder := &storeResponder{readLines: tt.lines, reads: 0, deletes: 0}
 			commands, _ := newCommands(t, responder.respond)
 
 			got, err := commands.ReadStoredMessage("SM", 1)
@@ -304,7 +320,9 @@ func TestReadStoredMessage_MissingPDULine(t *testing.T) {
 // and every inbound message died with
 // "decode stored PDU: tpdu: error decoding toa at octet 1: underflow".
 func TestReadStoredMessage_RealSIM800Capture(t *testing.T) {
-	responder := &storeResponder{readLines: []string{cmgrCapturedHeader, cmgrCapturedPDU}}
+	t.Parallel()
+
+	responder := &storeResponder{readLines: []string{cmgrCapturedHeader, cmgrCapturedPDU}, reads: 0, deletes: 0}
 	commands, _ := newCommands(t, responder.respond)
 
 	got, err := commands.ReadStoredMessage("SM", 1)
@@ -331,7 +349,9 @@ func TestReadStoredMessage_RealSIM800Capture(t *testing.T) {
 // capture: with NO body line, the header's <length> field ("23") must be
 // rejected outright - never returned as the PDU for the decoder to choke on.
 func TestReadStoredMessage_LengthFieldIsNeverAPDU(t *testing.T) {
-	responder := &storeResponder{readLines: []string{cmgrCapturedHeader}}
+	t.Parallel()
+
+	responder := &storeResponder{readLines: []string{cmgrCapturedHeader}, reads: 0, deletes: 0}
 	commands, _ := newCommands(t, responder.respond)
 
 	got, err := commands.ReadStoredMessage("SM", 1)
@@ -351,7 +371,9 @@ func TestReadStoredMessage_LengthFieldIsNeverAPDU(t *testing.T) {
 // (alpha shifts it to index 3), the candidate is returned only if it looks
 // like a PDU - non-empty even-length hex.
 func TestReadStoredMessage_InlinePDUWithoutBodyLine(t *testing.T) {
-	responder := &storeResponder{readLines: []string{cmgrHeader + "," + inboundTextPDU}}
+	t.Parallel()
+
+	responder := &storeResponder{readLines: []string{cmgrHeader + "," + inboundTextPDU}, reads: 0, deletes: 0}
 	commands, _ := newCommands(t, responder.respond)
 
 	got, err := commands.ReadStoredMessage("SM", 1)
@@ -405,7 +427,9 @@ func (m *cms321Modem) respond(w string) [][]byte {
 // The scripted modem below answers 321 to the two-argument form, so this test
 // is RED whenever the memory prefix comes back.
 func TestReadStoredMessage_SingleArgumentForm(t *testing.T) {
-	modem321 := &cms321Modem{}
+	t.Parallel()
+
+	modem321 := &cms321Modem{twoArgReads: 0, oneArgReads: 0}
 	commands, scratch := newCommands(t, modem321.respond)
 
 	got, err := commands.ReadStoredMessage("SM", 3)
@@ -433,7 +457,9 @@ func TestReadStoredMessage_SingleArgumentForm(t *testing.T) {
 // from an indication goroutine BLOCKS behind an in-flight send instead of
 // corrupting it. Both commands must complete with their own parse intact.
 func TestReadStoredMessage_ConcurrentWithSend(t *testing.T) {
-	responder := &storeResponder{readLines: []string{`+CMTI: "ME",1`, cmgrHeader, inboundTextPDU}}
+	t.Parallel()
+
+	responder := &storeResponder{readLines: []string{`+CMTI: "ME",1`, cmgrHeader, inboundTextPDU}, reads: 0, deletes: 0}
 	respond := func(w string) [][]byte {
 		if resps := smsResponder("7")(w); resps != nil {
 			return resps
@@ -482,7 +508,9 @@ func TestReadStoredMessage_ConcurrentWithSend(t *testing.T) {
 // delete surfaces the modem error. The wire pin is EXACT equality, so the
 // single-argument form carries no delflag argument either.
 func TestDeleteStoredMessage_UsesTheStoreReference(t *testing.T) {
-	responder := &storeResponder{}
+	t.Parallel()
+
+	responder := &storeResponder{readLines: nil, reads: 0, deletes: 0}
 	commands, scratch := newCommands(t, responder.respond)
 
 	if err := commands.DeleteStoredMessage("SM", 4); err != nil {
@@ -502,7 +530,7 @@ func TestDeleteStoredMessage_UsesTheStoreReference(t *testing.T) {
 			return [][]byte{okResponse("+CMS ERROR: 321")}
 		}
 
-		return (&storeResponder{}).respond(w)
+		return (&storeResponder{readLines: nil, reads: 0, deletes: 0}).respond(w)
 	}
 	commands, _ = newCommands(t, respond)
 
@@ -552,7 +580,9 @@ func (m *cmgdSigModem) respond(w string) [][]byte {
 // is RED whenever the memory prefix or a delflag argument comes back. The wire
 // pin is EXACT equality, so "AT+CMGD=3,1" fails it just like "AT+CMGD=0,3".
 func TestDeleteStoredMessage_SingleArgumentForm(t *testing.T) {
-	modem321 := &cmgdSigModem{}
+	t.Parallel()
+
+	modem321 := &cmgdSigModem{twoArgDeletes: 0, oneArgDeletes: 0}
 	commands, scratch := newCommands(t, modem321.respond)
 
 	if err := commands.DeleteStoredMessage("SM", 3); err != nil {
@@ -578,6 +608,8 @@ func TestDeleteStoredMessage_SingleArgumentForm(t *testing.T) {
 // malformed head is rejected with the sentinel instead of indexing the store at
 // a wrong position.
 func TestParseStoredReference(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		head      string
@@ -585,21 +617,23 @@ func TestParseStoredReference(t *testing.T) {
 		wantIndex int
 		wantErr   bool
 	}{
-		{name: "quoted ME", head: `+CMTI: "ME",1`, wantMem: "ME", wantIndex: 1},
-		{name: "unquoted ME", head: "+CMTI: ME,12", wantMem: "ME", wantIndex: 12},
-		{name: "SM alias", head: `+CMTI: "SM",0`, wantMem: "SM", wantIndex: 0},
-		{name: "MT alias", head: `+CMTI: "MT",7`, wantMem: "MT", wantIndex: 7},
-		{name: "lowercase normalized", head: `+CMTI: "me",3`, wantMem: "ME", wantIndex: 3},
-		{name: "padded fields", head: `+CMTI: "ME" , 5`, wantMem: "ME", wantIndex: 5},
-		{name: "missing index", head: `+CMTI: "ME"`, wantErr: true},
-		{name: "unknown memory", head: `+CMTI: "XX",1`, wantErr: true},
-		{name: "non-numeric index", head: `+CMTI: "ME",abc`, wantErr: true},
-		{name: "negative index", head: `+CMTI: "ME",-1`, wantErr: true},
-		{name: "not a +CMTI head", head: cmgrCapturedHeader, wantErr: true},
+		{name: "quoted ME", head: `+CMTI: "ME",1`, wantMem: "ME", wantIndex: 1, wantErr: false},
+		{name: "unquoted ME", head: "+CMTI: ME,12", wantMem: "ME", wantIndex: 12, wantErr: false},
+		{name: "SM alias", head: `+CMTI: "SM",0`, wantMem: "SM", wantIndex: 0, wantErr: false},
+		{name: "MT alias", head: `+CMTI: "MT",7`, wantMem: "MT", wantIndex: 7, wantErr: false},
+		{name: "lowercase normalized", head: `+CMTI: "me",3`, wantMem: "ME", wantIndex: 3, wantErr: false},
+		{name: "padded fields", head: `+CMTI: "ME" , 5`, wantMem: "ME", wantIndex: 5, wantErr: false},
+		{name: "missing index", head: `+CMTI: "ME"`, wantMem: "", wantIndex: 0, wantErr: true},
+		{name: "unknown memory", head: `+CMTI: "XX",1`, wantMem: "", wantIndex: 0, wantErr: true},
+		{name: "non-numeric index", head: `+CMTI: "ME",abc`, wantMem: "", wantIndex: 0, wantErr: true},
+		{name: "negative index", head: `+CMTI: "ME",-1`, wantMem: "", wantIndex: 0, wantErr: true},
+		{name: "not a +CMTI head", head: cmgrCapturedHeader, wantMem: "", wantIndex: 0, wantErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			memory, index, err := modem.ParseStoredReference(tt.head)
 			if tt.wantErr {
 				if err == nil {

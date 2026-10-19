@@ -76,6 +76,8 @@ func resolveModemConfig(t *testing.T) modem.Config {
 // modem store-deletion/recovery knobs (a DIFFERENT sweep - see the inbox Config
 // doc comment).
 func TestDefaultInboundAndCmgd(t *testing.T) {
+	t.Parallel()
+
 	cfg := config.Default()
 
 	if got := cfg.Inbox.ReassemblyTimeout; got != 5*time.Minute {
@@ -205,6 +207,8 @@ func TestNewRejectsInvalidInboundDuration(t *testing.T) {
 // default, and its comment block documents that same default - so the
 // documentation cannot drift from the code.
 func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
+	t.Parallel()
+
 	raw, err := os.ReadFile("../../.env.example")
 	if err != nil {
 		t.Fatalf("read .env.example: %v", err)
@@ -250,6 +254,8 @@ func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
 	lines := strings.Split(string(raw), "\n")
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
+			t.Parallel()
+
 			index := lineIndex(t, lines, tt.key+"=")
 			if got := strings.TrimSpace(strings.TrimPrefix(lines[index], tt.key+"=")); got != tt.documented {
 				t.Errorf("%s = %q in .env.example, want %q", tt.key, got, tt.documented)
@@ -295,6 +301,8 @@ func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
 // built-in defaults and are documented in their comment block, so the
 // documentation cannot drift from the code.
 func TestEnvExampleDocumentsStoreKeys(t *testing.T) {
+	t.Parallel()
+
 	raw, err := os.ReadFile("../../.env.example")
 	if err != nil {
 		t.Fatalf("read .env.example: %v", err)

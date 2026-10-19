@@ -23,6 +23,8 @@ const (
 )
 
 func TestDecodeDeliveryReport_Success(t *testing.T) {
+	t.Parallel()
+
 	report, err := modem.DecodeDeliveryReport(statusReportPDU)
 	if err != nil {
 		t.Fatalf("DecodeDeliveryReport: %v", err)
@@ -39,6 +41,8 @@ func TestDecodeDeliveryReport_Success(t *testing.T) {
 }
 
 func TestDecodeDeliveryReport_WrongType(t *testing.T) {
+	t.Parallel()
+
 	_, err := modem.DecodeDeliveryReport(deliveryPDU)
 	if err == nil {
 		t.Fatal("DecodeDeliveryReport = nil error, want rejection of a non-status-report PDU")
@@ -46,6 +50,8 @@ func TestDecodeDeliveryReport_WrongType(t *testing.T) {
 }
 
 func TestDecodeDeliveryReport_Malformed(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		body string
@@ -56,6 +62,8 @@ func TestDecodeDeliveryReport_Malformed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			if _, err := modem.DecodeDeliveryReport(tt.body); err == nil {
 				t.Fatalf("DecodeDeliveryReport(%q) = nil error, want error", tt.body)
 			}
