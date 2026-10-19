@@ -171,6 +171,12 @@ func (d *inboundDeduper) CapacityForTest() int {
 	return d.capacity
 }
 
+// TTLForTest exposes the pinned dedupe TTL, so an external test can step an
+// explicit clock past the window without hard-coding the constant.
+func (d *inboundDeduper) TTLForTest() time.Duration {
+	return d.ttl
+}
+
 // LenForTest reports how many message ids the dedupe remembers.
 func (d *inboundDeduper) LenForTest() int {
 	return len(d.entries)
