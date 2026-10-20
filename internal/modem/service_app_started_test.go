@@ -336,13 +336,11 @@ func TestAppStarted_EmittedOncePerProcessAtReady(t *testing.T) {
 		return len(queuedEnvelopes(t, repo)) == 2
 	})
 
-	// The SIM attributes are pinned AS THE MODEM SNAPSHOT HOLDS THEM: the
-	// emission publishes the snapshot verbatim. Note the ICCID keeps its
-	// "+CCID: " prefix, because GetSimInfo reads +CCID with atGetFirstLine,
-	// which returns the whole response line - a pre-existing parse quirk that
-	// is out of this task's scope, not part of the wire contract pinned here.
+	// The SIM attributes are pinned AS THE MODEM SNAPSHOT HOLDS THEM, with the
+	// ICCID NORMALIZED: GetSimInfo strips the "+CCID: " response prefix, so the
+	// published identifier is the bare ICCID the consumer expects.
 	want := `{"simCards":[{"slotIndex":0,"simNumber":1,"phoneNumber":"+79991234567",` +
-		`"carrierName":"MegaFon","iccid":"+CCID: 25001123456789012345"}]}`
+		`"carrierName":"MegaFon","iccid":"25001123456789012345"}]}`
 	for _, hookID := range []string{hookFirst, hookSecond} {
 		if got := envelopePayload(t, storedPayload(t, repo, hookID)); got != want {
 			t.Errorf("payload for %s = %s, want %s", hookID, got, want)

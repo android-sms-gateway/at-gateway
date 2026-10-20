@@ -92,6 +92,11 @@ func okResponse(body string) []byte {
 // initResponder answers the standard boot init sequence rows: plain commands
 // with OK, +CPIN? with a READY status line followed by OK.
 func initResponder(w string) [][]byte {
+	// +CPMS selects the preferred message storage before a store command; any
+	// store name is accepted with OK.
+	if strings.HasPrefix(w, "AT+CPMS=") {
+		return [][]byte{okResponse("OK")}
+	}
 	switch w {
 	case "AT\r\n", "ATE0\r\n", "AT+CMEE=1\r\n", "AT+CMGF=0\r\n", "AT+CNMI=2,1,0,1,0\r\n":
 		return [][]byte{okResponse("OK")}
@@ -680,7 +685,7 @@ func TestGetSimInfo(t *testing.T) {
 			name:           "reported msisdn",
 			cnumLine:       `+CNUM: "MegaFon","+79991234567",145`,
 			wantPhone:      "+79991234567",
-			wantICCID:      "+CCID: 25001123456789012345",
+			wantICCID:      "25001123456789012345",
 			wantCarrier:    "MegaFon",
 			wantPercent:    70,
 			wantRegistered: true,
@@ -689,7 +694,7 @@ func TestGetSimInfo(t *testing.T) {
 			name:           "no msisdn reported",
 			cnumLine:       "",
 			wantPhone:      "",
-			wantICCID:      "+CCID: 25001123456789012345",
+			wantICCID:      "25001123456789012345",
 			wantCarrier:    "MegaFon",
 			wantPercent:    70,
 			wantRegistered: true,
@@ -700,7 +705,7 @@ func TestGetSimInfo(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			commands, _ := newCommands(t, simResponder(
 				tt.cnumLine,
-				tt.wantICCID,
+				"+CCID: "+tt.wantICCID,
 				`+COPS: 0,0,"`+tt.wantCarrier+`",7`,
 				"+CSQ: 22,99",
 				"+CREG: 0,1",

@@ -41,6 +41,7 @@ type Metrics struct {
 	inboundPartsDropped     *prometheus.CounterVec
 	storeCommandFailures    *prometheus.CounterVec
 	inboundHandlersInflight prometheus.Gauge
+	storeSweeps             prometheus.Counter
 	initFailures            *prometheus.CounterVec
 }
 
@@ -110,6 +111,13 @@ func NewMetrics() *Metrics {
 				Help: "Number of +CMTI indication handlers currently running",
 			},
 		),
+		storeSweeps: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_modem_store_sweeps_total",
+				Help: "Total number of retained-entry sweeps that listed a non-empty preferred store " +
+					"(AT+CMGL=4) to recover entries that were stored but never re-notified",
+			},
+		),
 		initFailures: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "at_gateway_modem_init_failures_total",
@@ -145,6 +153,12 @@ func (m *Metrics) IncInboundHandlersInflight() {
 // DecInboundHandlersInflight records that one +CMTI handler finished.
 func (m *Metrics) DecInboundHandlersInflight() {
 	m.inboundHandlersInflight.Dec()
+}
+
+// IncStoreSweep counts one retained-entry sweep that found at least one store
+// entry to re-process.
+func (m *Metrics) IncStoreSweep() {
+	m.storeSweeps.Inc()
 }
 
 // IncInitFailure counts one connect() failure that stopped the modem before it

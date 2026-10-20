@@ -71,6 +71,12 @@ func NewTestMetrics() *Metrics {
 				Help: "Test gauge",
 			},
 		),
+		storeSweeps: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "test_store_sweeps_total",
+				Help: "Test counter",
+			},
+		),
 		initFailures: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "test_init_failures_total",
@@ -101,6 +107,11 @@ func InboundHandlersInflight(m *Metrics) float64 {
 	return testutil.ToFloat64(m.inboundHandlersInflight)
 }
 
+// StoreSweeps reads the retained-entry sweep counter.
+func StoreSweeps(m *Metrics) float64 {
+	return testutil.ToFloat64(m.storeSweeps)
+}
+
 // SetPortFactory replaces the serial-port factory so external tests can drive
 // a scripted modem through the real connect()/indication path (the field is
 // the same seam the send tests already rely on).
@@ -109,7 +120,7 @@ func (s *Service) SetPortFactory(factory func(port.Config) (port.Port, error)) {
 }
 
 // ParseStoredReference exposes the +CMTI head parser to external tests.
-func ParseStoredReference(head string) (int, int, error) {
+func ParseStoredReference(head string) (string, int, error) {
 	return parseStoredReference(head)
 }
 
