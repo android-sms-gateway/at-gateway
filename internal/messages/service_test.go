@@ -56,7 +56,7 @@ func newServiceWithConfig(t *testing.T, config messages.Config) *messages.Servic
 
 	// The modem service is never run: webhook emission reads only its cached
 	// SIM state, so a disconnected service is enough here.
-	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil)
+	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil, webhooksSvc)
 
 	return messages.NewService(config, repo, devicesSvc, modemSvc, webhooksSvc, metrics, zap.NewNop())
 }

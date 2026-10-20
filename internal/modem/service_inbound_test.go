@@ -1,0 +1,760 @@
+package modem_test
+
+import (
+	"context"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/at-gateway/internal/modem/port"
+	"go.uber.org/zap"
+)
+
+// Drop reasons, mirrored from the production labels so a rename breaks the
+// test instead of silently detaching the metric.
+const (
+	dropMalformedHead    = "malformed_head"
+	dropNotConnected     = "not_connected"
+	dropHandlerSaturated = "handler_saturated"
+	dropReadFailed       = "read_failed"
+	dropDecodeFailed     = "decode_failed"
+	dropChannelFull      = "channel_full"
+	dropChannelFullSpent = "channel_full_exhausted"
+	dropHandlerPanic     = "handler_panic"
+)
+
+// cmgdOp is the <op> label the store-deletion failure counter carries.
+const cmgdOp = "cmgd"
+
+// inboundChannelCapacity mirrors the pinned consumer-channel capacity, so a
+// test that fills it does not hard-code a bare 64.
+const inboundChannelCapacity = 64
+
+// storeModem scripts the whole boot sequence plus the store commands:
+//
+//   - every index serves the configured default PDU;
+//   - the first deleteFailures +CMGD attempts are rejected with +CMS ERROR, so
+//     the retry backoff parks a handler in its slot for the test to observe;
+//   - every issued +CMGD records its index, so a test can prove WHICH entries
+//     were deleted and which were left readable in the modem store.
+type storeModem struct {
+	defaultPDU string
+
+	mu             sync.Mutex
+	reads          int
+	deletes        int
+	deleteFailures int
+	deletedIndexes []int
+}
+
+func (m *storeModem) respond(w string) [][]byte {
+	if resps := initResponder(w); resps != nil {
+		return resps
+	}
+	if resps := simResponder(
+		`+CNUM: "MegaFon","+79991234567",145`,
+		"+CCID: 25001123456789012345",
+		`+COPS: 0,0,"MegaFon",7`,
+		"+CSQ: 22,99",
+		"+CREG: 0,1",
+	)(w); resps != nil {
+		return resps
+	}
+	switch {
+	case strings.HasPrefix(w, "AT+GMI"):
+		return [][]byte{okResponse("MegaFon"), okResponse("OK")}
+	case strings.HasPrefix(w, "AT+GMM"):
+		return [][]byte{okResponse("MS2131"), okResponse("OK")}
+	case strings.HasPrefix(w, "AT+GSN"):
+		return [][]byte{okResponse("352093001111111"), okResponse("OK")}
+	case strings.HasPrefix(w, "AT+CMGR="):
+		return m.readStore(w)
+	case strings.HasPrefix(w, "AT+CMGD="):
+		return m.deleteStore(w)
+	}
+
+	return nil
+}
+
+func (m *storeModem) readStore(w string) [][]byte {
+	m.mu.Lock()
+	m.reads++
+	m.mu.Unlock()
+
+	pdu := m.defaultPDU
+	index := storeIndex(w)
+	if index == 0 {
+		return [][]byte{okResponse("+CMS ERROR: 321")}
+	}
+
+	return [][]byte{
+		okResponse(`+CMGR: 1,"",` + strconv.Itoa(len(pdu)/2)),
+		okResponse(pdu),
+		okResponse("OK"),
+	}
+}
+
+func (m *storeModem) deleteStore(w string) [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.deletes++
+	m.deletedIndexes = append(m.deletedIndexes, storeIndex(w))
+	if m.deletes <= m.deleteFailures {
+		return [][]byte{okResponse("+CMS ERROR: 321")}
+	}
+
+	return [][]byte{okResponse("OK")}
+}
+
+func (m *storeModem) counters() (int, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.reads, m.deletes
+}
+
+// deletedFor reports whether AT+CMGD was ever issued for a store index, i.e.
+// whether the entry is gone from the modem store.
+func (m *storeModem) deletedFor(index int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return slices.Contains(m.deletedIndexes, index)
+}
+
+// storeIndex extracts the <index> argument of an AT+CMGR/AT+CMGD write. Both
+// commands carry the index ALONE (+CMGR: 3GPP TS 27.005 3.4.2; +CMGD: SIM800
+// Series AT Command Manual V1.10 sec 4.2.1). The comma cut stays only so a
+// two-argument regression still parses on the wire instead of recording 0.
+func storeIndex(w string) int {
+	var payload string
+	switch {
+	case strings.HasPrefix(w, "AT+CMGR="):
+		payload = strings.TrimPrefix(w, "AT+CMGR=")
+	case strings.HasPrefix(w, "AT+CMGD="):
+		payload = strings.TrimPrefix(w, "AT+CMGD=")
+	default:
+		return 0
+	}
+
+	if _, index, found := strings.Cut(payload, ","); found {
+		payload = index
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(payload))
+	if err != nil {
+		return 0
+	}
+
+	return parsed
+}
+
+// servicePort wraps the shared scripted modem for the Service-level tests.
+// Its Close only flips the closed flag: the shared harness closes the response
+// channel, which would race with a command write that is still in flight when
+// the test tears the modem down. Leaving Read blocked is harmless - Run exits
+// on context cancellation.
+type servicePort struct {
+	*scriptedModem
+}
+
+func (p *servicePort) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.closed = true
+
+	return nil
+}
+
+// newInboundService starts a modem Service on a scripted port and waits until
+// it is ready, so tests can push unsolicited +CMTI heads at it.
+func newInboundService(
+	t *testing.T,
+	config modem.Config,
+	scripted *storeModem,
+) (*modem.Service, *modem.Metrics, *servicePort) {
+	t.Helper()
+
+	return newInboundServiceWithTick(t, config, scripted, 0)
+}
+
+// newInboundServiceWithTick is newInboundService with an EXPLICIT period for the
+// Run ticker, so a test can drive the lifecycle work the tick performs; a zero
+// period keeps the production default.
+func newInboundServiceWithTick(
+	t *testing.T,
+	config modem.Config,
+	scripted *storeModem,
+	tick time.Duration,
+) (*modem.Service, *modem.Metrics, *servicePort) {
+	t.Helper()
+
+	metrics := modem.NewTestMetrics()
+	scratch := &servicePort{&scriptedModem{
+		responses: make(chan []byte, 1024),
+		onWrite:   scripted.respond,
+	}}
+
+	// The scripted modem reaches ready state, so the service gets a real
+	// webhooks dependency: its app:started emission is enqueued there.
+	webhooksSvc, _ := newWebhookFixture(t)
+	service := modem.NewService(config, zap.NewNop(), metrics, webhooksSvc)
+	service.SetPortFactory(func(port.Config) (port.Port, error) {
+		return scratch, nil
+	})
+	if tick > 0 {
+		service.SetSignalRefreshIntervalForTest(tick)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- service.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		waitForCount(t, "every inbound handler to return", func() bool {
+			return modem.InboundHandlersInflight(metrics) == 0
+		})
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("modem Run did not stop after context cancellation")
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for service.State() != modem.StateReady {
+		if time.Now().After(deadline) {
+			t.Fatalf("modem state = %s, want ready", service.State())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	return service, metrics, scratch
+}
+
+// pushURC writes unsolicited lines into the scripted modem's read stream, the
+// way a modem emits them between commands.
+func pushURC(scratch *servicePort, lines ...string) {
+	for _, line := range lines {
+		scratch.responses <- []byte("\r\n" + line + "\r\n")
+	}
+}
+
+// waitForCount polls until cond holds or the deadline expires.
+func waitForCount(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// receivePart reads one inbound part, failing the test on timeout.
+func receivePart(t *testing.T, service *modem.Service) modem.InboundPart {
+	t.Helper()
+
+	select {
+	case part := <-service.InboundParts():
+		return part
+	case <-time.After(5 * time.Second):
+		t.Fatal("no inbound part arrived within 5s")
+	}
+
+	return modem.InboundPart{}
+}
+
+// inboundServiceConfig is the config the scripted modem runs with: short
+// command timeouts keep a silent command bounded.
+func inboundServiceConfig() modem.Config {
+	return modem.Config{
+		Port:           "/dev/null",
+		BaudRate:       115200,
+		InitTimeout:    5 * time.Second,
+		CommandTimeout: 500 * time.Millisecond,
+		Cmgd: modem.CmgdConfig{
+			RetryAttempts: 1,
+			RetryBackoff:  time.Millisecond,
+		},
+	}
+}
+
+// TestInboundRoute_ReadsDecodesAndDeletes pins the whole +CMTI route: the head
+// is parsed, the stored PDU is read, decoded and handed to the consumer, and
+// the store entry is deleted afterwards. The CNMI init row stays the frozen
+// "+CNMI=2,1,0,1,0" (mt=1: store + emit +CMTI) and +CMT is no longer
+// registered, so the head carries no PII at all.
+func TestInboundRoute_ReadsDecodesAndDeletes(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+
+	pushURC(scratch, `+CMTI: "ME",1`)
+	part := receivePart(t, service)
+
+	if part.Sender != "+79990001234" {
+		t.Errorf("sender = %q, want +79990001234", part.Sender)
+	}
+	if part.Content != "hello" {
+		t.Errorf("content = %q, want %q", part.Content, "hello")
+	}
+	if !part.TimestampValid || part.ReceivedAt.IsZero() {
+		t.Error("receivedAt is absent, want the decoded TP-SCTS")
+	}
+
+	waitForCount(t, "the handler to finish", func() bool {
+		_, deletes := scripted.counters()
+
+		return deletes == 1 && modem.InboundHandlersInflight(metrics) == 0
+	})
+	if reads, _ := scripted.counters(); reads != 1 {
+		t.Errorf("+CMGR attempts = %d, want 1", reads)
+	}
+
+	for _, reason := range []string{
+		dropMalformedHead,
+		dropNotConnected,
+		dropHandlerSaturated,
+		dropReadFailed,
+		dropDecodeFailed,
+		dropChannelFull,
+		dropChannelFullSpent,
+		dropHandlerPanic,
+	} {
+		if got := modem.InboundPartDropped(metrics, reason); got != 0 {
+			t.Errorf("dropped reason=%s = %v, want 0", reason, got)
+		}
+	}
+	if got := modem.InboundHandlersInflight(metrics); got != 0 {
+		t.Errorf("handlers inflight = %v, want 0 after the handler returned", got)
+	}
+	if got := modem.StoreCommandFailure(metrics, cmgdOp); got != 0 {
+		t.Errorf("store failures op=%s = %v, want 0", cmgdOp, got)
+	}
+
+	writes := strings.Join(scratch.getWrites(), "")
+	if !strings.Contains(writes, "AT+CNMI=2,1,0,1,0") {
+		t.Error("the frozen +CNMI=2,1,0,1,0 init row is gone from the wire")
+	}
+}
+
+// TestInboundRoute_EmitsEveryPartUnchanged pins that the modem layer hands
+// every decoded part over verbatim - multi-part concat (both widths) and
+// port-addressed data included - because REASSEMBLY belongs to the consumer.
+func TestInboundRoute_EmitsEveryPartUnchanged(t *testing.T) {
+	tests := []struct {
+		name        string
+		pdu         string
+		wantContent string
+		wantPort    uint16
+		wantPorted  bool
+		wantConcat  *modem.ConcatRef
+	}{
+		{
+			name:        "concat 8-bit part 1",
+			pdu:         inboundConcat8Part1PDU,
+			wantContent: "abcdefgh",
+			wantConcat:  &modem.ConcatRef{Segments: 2, Sequence: 1, Ref: 0x42, RefWidth: 8},
+		},
+		{
+			name:        "concat 16-bit part 1",
+			pdu:         inboundConcat16Part1PDU,
+			wantContent: "abcdefgh",
+			wantConcat:  &modem.ConcatRef{Segments: 2, Sequence: 1, Ref: 0x42, RefWidth: 16},
+		},
+		{
+			name:        "data SMS with 8-bit port",
+			pdu:         inboundPort8PDU,
+			wantContent: "\xca\xfe",
+			wantPort:    22,
+			wantPorted:  true,
+		},
+		{
+			name:        "data SMS with 16-bit port",
+			pdu:         inboundPort16PDU,
+			wantContent: "\xca\xfe\xba\xbe",
+			wantPort:    80,
+			wantPorted:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scripted := &storeModem{defaultPDU: tt.pdu}
+			service, _, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+
+			pushURC(scratch, `+CMTI: "ME",1`)
+			part := receivePart(t, service)
+
+			if part.Content != tt.wantContent {
+				t.Errorf("content = %q, want %q", part.Content, tt.wantContent)
+			}
+			if part.Ported != tt.wantPorted {
+				t.Errorf("ported = %v, want %v", part.Ported, tt.wantPorted)
+			}
+			if part.Port != tt.wantPort {
+				t.Errorf("port = %d, want %d", part.Port, tt.wantPort)
+			}
+			switch {
+			case tt.wantConcat == nil && part.Concat != nil:
+				t.Errorf("concat = %+v, want nil", part.Concat)
+			case tt.wantConcat != nil && part.Concat == nil:
+				t.Errorf("concat = nil, want %+v", tt.wantConcat)
+			case tt.wantConcat != nil && *part.Concat != *tt.wantConcat:
+				t.Errorf("concat = %+v, want %+v", part.Concat, tt.wantConcat)
+			}
+
+			waitForCount(t, "the store delete", func() bool {
+				_, deletes := scripted.counters()
+
+				return deletes == 1
+			})
+		})
+	}
+}
+
+// TestInboundRoute_UndecodablePDUIsDroppedBeforeTheDelete pins the failure
+// order: a stored body that cannot be decoded never reaches the consumer AND
+// is not deleted, so the entry stays available for the modem to re-notify.
+func TestInboundRoute_UndecodablePDUIsDroppedBeforeTheDelete(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU[:30]}
+	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+
+	pushURC(scratch, `+CMTI: "ME",1`)
+	waitForCount(t, "the decode-failure drop", func() bool {
+		return modem.InboundPartDropped(metrics, dropDecodeFailed) == 1
+	})
+
+	if _, deletes := scripted.counters(); deletes != 0 {
+		t.Errorf("+CMGD attempts = %d, want 0 for an undecodable body", deletes)
+	}
+	select {
+	case part := <-service.InboundParts():
+		t.Fatalf("undecodable part reached the consumer: %+v", part)
+	default:
+	}
+}
+
+// TestInboundRoute_UnreadableStoreEntryIsDropped pins the read-failure branch:
+// a modem that rejects +CMGR leaves the consumer untouched and counts the
+// read failure.
+func TestInboundRoute_UnreadableStoreEntryIsDropped(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+
+	// +CMGR=<index> with index 0 makes the scripted modem answer +CMS ERROR.
+	pushURC(scratch, `+CMTI: "ME",0`)
+	waitForCount(t, "the read-failure drop", func() bool {
+		return modem.InboundPartDropped(metrics, dropReadFailed) == 1
+	})
+
+	if _, deletes := scripted.counters(); deletes != 0 {
+		t.Errorf("+CMGD attempts = %d, want 0 when the read failed", deletes)
+	}
+	select {
+	case part := <-service.InboundParts():
+		t.Fatalf("unreadable entry reached the consumer: %+v", part)
+	default:
+	}
+}
+
+// TestInboundRoute_MalformedHeadIsDropped pins the head-parse failure branch.
+func TestInboundRoute_MalformedHeadIsDropped(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	_, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+
+	pushURC(scratch, `+CMTI: "XX",1`)
+	waitForCount(t, "the malformed-head drop", func() bool {
+		return modem.InboundPartDropped(metrics, dropMalformedHead) == 1
+	})
+
+	if reads, _ := scripted.counters(); reads != 0 {
+		t.Errorf("+CMGR attempts = %d, want 0 for an unusable memory name", reads)
+	}
+}
+
+// TestInboundRoute_HandlerSaturationDropsIndications pins the PRODUCER-SIDE
+// bound: with a store read held in flight, the pinned handler semaphore fills
+// up and further indications are dropped instead of spawning unbounded
+// goroutines. The gauge tracks the occupancy.
+func TestInboundRoute_HandlerSaturationDropsIndications(t *testing.T) {
+	// Every handler that is admitted parks in its CMGD retry backoff, which is
+	// how a real modem behaves when it refuses to delete a store entry.
+	scripted := &storeModem{defaultPDU: inboundTextPDU, deleteFailures: 1000}
+	config := inboundServiceConfig()
+	config.Cmgd = modem.CmgdConfig{RetryAttempts: 2, RetryBackoff: 2 * time.Second}
+	service, metrics, scratch := newInboundService(t, config, scripted)
+
+	if got := service.HandlerSlots(); got != 4 {
+		t.Fatalf("handler slots = %d, want the pinned 4", got)
+	}
+
+	// Four indications fill every slot; each one then parks in the delete
+	// backoff while holding its slot.
+	pushURC(scratch, `+CMTI: "ME",1`, `+CMTI: "ME",2`, `+CMTI: "ME",3`, `+CMTI: "ME",4`)
+	waitForCount(t, "the semaphore to fill", func() bool {
+		return modem.InboundHandlersInflight(metrics) == 4
+	})
+
+	// The next indication has no slot and is dropped instead of spawning
+	// another goroutine.
+	pushURC(scratch, `+CMTI: "ME",5`)
+	waitForCount(t, "the saturation drop", func() bool {
+		return modem.InboundPartDropped(metrics, dropHandlerSaturated) == 1
+	})
+	if reads, _ := scripted.counters(); reads != 4 {
+		t.Errorf("+CMGR attempts = %d, want 4 - the dropped indication never reads", reads)
+	}
+
+	waitForCount(t, "every handler to return", func() bool {
+		return modem.InboundHandlersInflight(metrics) == 0
+	})
+
+	// The four admitted parts are still delivered: saturation only drops the
+	// indications that had no slot.
+	if got := len(service.InboundParts()); got != 4 {
+		t.Errorf("buffered parts = %d, want the 4 admitted", got)
+	}
+}
+
+// fillInboundChannel pushes one indication per store index until the consumer
+// channel is saturated, so the NEXT hand-off fails on a full channel alone. The
+// indications are fed one at a time (waiting for each store read) so the
+// producer-side semaphore never saturates.
+func fillInboundChannel(t *testing.T, service *modem.Service, scratch *servicePort, scripted *storeModem) {
+	t.Helper()
+
+	for index := 1; index <= inboundChannelCapacity; index++ {
+		current := index
+		pushURC(scratch, `+CMTI: "ME",`+strconv.Itoa(current))
+		waitForCount(t, "the store read of indication "+strconv.Itoa(current), func() bool {
+			reads, _ := scripted.counters()
+
+			return reads == current
+		})
+	}
+
+	waitForCount(t, "the consumer channel to fill", func() bool {
+		return len(service.InboundParts()) == inboundChannelCapacity
+	})
+}
+
+// TestInboundRoute_FullConsumerChannelKeepsTheStoreEntry pins the CONSUMER-SIDE
+// bound: the hand-off to the consumer is non-blocking, so a full channel fails
+// it - but the store entry is NOT deleted, because a deleted entry can never be
+// re-notified and the recoverable drop would become permanent loss. The failure
+// is counted by reason and the entry stays readable in the modem store.
+func TestInboundRoute_FullConsumerChannelKeepsTheStoreEntry(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+	fillInboundChannel(t, service, scratch, scripted)
+
+	const kept = inboundChannelCapacity + 1
+	pushURC(scratch, `+CMTI: "ME",`+strconv.Itoa(kept))
+	waitForCount(t, "the channel-full drop", func() bool {
+		return modem.InboundPartDropped(metrics, dropChannelFull) == 1
+	})
+	if got := modem.InboundPartDropped(metrics, dropHandlerSaturated); got != 0 {
+		t.Errorf("dropped reason=%s = %v, want 0", dropHandlerSaturated, got)
+	}
+	if got := modem.InboundPartDropped(metrics, dropChannelFullSpent); got != 0 {
+		t.Errorf("dropped reason=%s = %v, want 0 while the retry budget lasts", dropChannelFullSpent, got)
+	}
+	if scripted.deletedFor(kept) {
+		t.Errorf("+CMGD was issued for index %d after a full-channel drop: "+
+			"the entry must stay readable for a re-notification", kept)
+	}
+
+	// The modem re-notifies the SAME index: a second read succeeds, which is
+	// only possible because the entry was never deleted.
+	pushURC(scratch, `+CMTI: "ME",`+strconv.Itoa(kept))
+	waitForCount(t, "the re-notification to re-read the kept entry", func() bool {
+		reads, _ := scripted.counters()
+
+		return reads == kept+1
+	})
+	if scripted.deletedFor(kept) {
+		t.Errorf("+CMGD was issued for index %d on re-notification", kept)
+	}
+}
+
+// TestInboundRoute_ChannelFullRetryBudgetIsBounded pins the BOUND of the
+// recoverable drop: the entry survives the first two full-channel hand-off
+// failures (the pinned inboundChannelFullRetries budget) and is deleted on the
+// third, so the retry loop cannot run forever. The final loss is counted apart
+// from the retryable drop, which is what an operator alerts on.
+func TestInboundRoute_ChannelFullRetryBudgetIsBounded(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU}
+	service, metrics, scratch := newInboundService(t, inboundServiceConfig(), scripted)
+	fillInboundChannel(t, service, scratch, scripted)
+
+	const stuck = inboundChannelCapacity + 7
+
+	// reNotify re-notifies the stuck index; the read proves the entry is still
+	// in the modem store.
+	reNotify := func(attempt int) {
+		t.Helper()
+
+		pushURC(scratch, `+CMTI: "ME",`+strconv.Itoa(stuck))
+		waitForCount(t, "the store read of retry "+strconv.Itoa(attempt), func() bool {
+			reads, _ := scripted.counters()
+
+			return reads == inboundChannelCapacity+attempt
+		})
+	}
+
+	// The pinned budget is 3 attempts: the first two keep the entry...
+	for attempt := 1; attempt <= 2; attempt++ {
+		reNotify(attempt)
+		waitForCount(t, "the retryable drop of attempt "+strconv.Itoa(attempt), func() bool {
+			return modem.InboundPartDropped(metrics, dropChannelFull) == float64(attempt)
+		})
+		if scripted.deletedFor(stuck) {
+			t.Fatalf("+CMGD was issued for index %d at attempt %d, want the entry kept "+
+				"while the retry budget lasts", stuck, attempt)
+		}
+	}
+
+	// ...and the third spends it: the entry is finally deleted and the loss is
+	// counted apart from the retryable drop.
+	reNotify(3)
+	waitForCount(t, "the exhausted drop", func() bool {
+		return modem.InboundPartDropped(metrics, dropChannelFullSpent) == 1
+	})
+	waitForCount(t, "the store delete of the exhausted entry", func() bool {
+		return scripted.deletedFor(stuck)
+	})
+
+	if got := modem.InboundPartDropped(metrics, dropChannelFull); got != 2 {
+		t.Errorf("dropped reason=%s = %v, want 2 (the retries that kept the entry)", dropChannelFull, got)
+	}
+	if got := modem.InboundPartDropped(metrics, dropChannelFullSpent); got != 1 {
+		t.Errorf("dropped reason=%s = %v, want exactly 1 final loss", dropChannelFullSpent, got)
+	}
+	if got := len(service.InboundParts()); got != inboundChannelCapacity {
+		t.Errorf("buffered parts = %d, want the channel capacity %d", got, inboundChannelCapacity)
+	}
+}
+
+// TestInboundRoute_CMGDRetriesExponentialBackoff pins the retry policy: the
+// configured attempt count is honoured, the backoff grows exponentially and a
+// persistent failure counts store_command_failures_total{op="cmgd"} - while
+// the part has already reached the consumer (the delete runs last).
+func TestInboundRoute_CMGDRetriesExponentialBackoff(t *testing.T) {
+	t.Run("recovers within the attempts", func(t *testing.T) {
+		scripted := &storeModem{defaultPDU: inboundTextPDU, deleteFailures: 2}
+		config := inboundServiceConfig()
+		config.Cmgd = modem.CmgdConfig{RetryAttempts: 3, RetryBackoff: 5 * time.Millisecond}
+		service, metrics, scratch := newInboundService(t, config, scripted)
+
+		pushURC(scratch, `+CMTI: "ME",1`)
+		receivePart(t, service)
+
+		start := time.Now()
+		waitForCount(t, "three delete attempts", func() bool {
+			_, deletes := scripted.counters()
+
+			return deletes == 3
+		})
+		waitForCount(t, "the third attempt to settle", func() bool {
+			return modem.InboundHandlersInflight(metrics) == 0
+		})
+		elapsed := time.Since(start)
+
+		// Sleep budget is 5ms + 10ms = 15ms of exponential backoff.
+		if elapsed < 15*time.Millisecond {
+			t.Errorf("retry elapsed = %s, want at least the 15ms sleep budget", elapsed)
+		}
+		if got := modem.StoreCommandFailure(metrics, cmgdOp); got != 0 {
+			t.Errorf("store failures op=%s = %v, want 0 after recovery", cmgdOp, got)
+		}
+	})
+
+	t.Run("exhausts the attempts", func(t *testing.T) {
+		scripted := &storeModem{defaultPDU: inboundTextPDU, deleteFailures: 10}
+		config := inboundServiceConfig()
+		config.Cmgd = modem.CmgdConfig{RetryAttempts: 3, RetryBackoff: 5 * time.Millisecond}
+		service, metrics, scratch := newInboundService(t, config, scripted)
+
+		pushURC(scratch, `+CMTI: "ME",1`)
+		// The consumer still gets the message: the delete failure must not
+		// swallow an already-decoded part.
+		if part := receivePart(t, service); part.Content != "hello" {
+			t.Errorf("content = %q, want %q", part.Content, "hello")
+		}
+
+		waitForCount(t, "the exhausted store failure", func() bool {
+			return modem.StoreCommandFailure(metrics, cmgdOp) == 1
+		})
+		if _, deletes := scripted.counters(); deletes != 3 {
+			t.Errorf("+CMGD attempts = %d, want exactly 3", deletes)
+		}
+	})
+}
+
+// TestInboundRoute_NoCommandsIsNotConnected pins the nil-Commands safety: an
+// indication delivered after the disconnect (or before Run) logs and returns
+// without touching the store or panicking.
+func TestInboundRoute_NoCommandsIsNotConnected(t *testing.T) {
+	metrics := modem.NewTestMetrics()
+	service := modem.NewService(inboundServiceConfig(), zap.NewNop(), metrics, nil)
+
+	for _, head := range []string{`+CMTI: "ME",1`, `+CMTI: "ME",2`} {
+		service.HandleCMTIForTest([]string{head})
+	}
+
+	if got := modem.InboundPartDropped(metrics, dropNotConnected); got != 2 {
+		t.Errorf("dropped reason=%s = %v, want 2", dropNotConnected, got)
+	}
+	if got := modem.InboundHandlersInflight(metrics); got != 0 {
+		t.Errorf("handlers inflight = %v, want 0", got)
+	}
+	select {
+	case part := <-service.InboundParts():
+		t.Fatalf("part arrived without a modem: %+v", part)
+	default:
+	}
+}
+
+// TestInboundRoute_EmptyIndicationIsDropped pins the empty-head branch, which
+// the library can produce when an indication carries no line at all.
+func TestInboundRoute_EmptyIndicationIsDropped(t *testing.T) {
+	metrics := modem.NewTestMetrics()
+	service := modem.NewService(inboundServiceConfig(), zap.NewNop(), metrics, nil)
+
+	service.HandleCMTIForTest(nil)
+
+	if got := modem.InboundPartDropped(metrics, dropMalformedHead); got != 1 {
+		t.Errorf("dropped reason=%s = %v, want 1", dropMalformedHead, got)
+	}
+}
+
+// TestRecoverInbound_SwallowsHandlerPanic pins the panic guard the +CMTI and
+// +CDS handlers run under: a panic on the library-spawned handler goroutine is
+// swallowed and counted instead of taking the process down (a test-binary
+// crash would fail this test loudly).
+func TestRecoverInbound_SwallowsHandlerPanic(t *testing.T) {
+	metrics := modem.NewTestMetrics()
+	service := modem.NewService(inboundServiceConfig(), zap.NewNop(), metrics, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer service.RecoverInboundForTest()
+		panic("malformed PDU blew up")
+	}()
+	<-done
+
+	if got := modem.InboundPartDropped(metrics, dropHandlerPanic); got != 1 {
+		t.Errorf("dropped reason=%s = %v, want 1", dropHandlerPanic, got)
+	}
+}
