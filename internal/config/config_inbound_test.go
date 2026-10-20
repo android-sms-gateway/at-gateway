@@ -8,13 +8,15 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/inbox"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"go.uber.org/fx"
 )
 
-// resolveMessagesConfig and resolveModemConfig resolve the per-domain configs
-// through the fx binding layer, i.e. exactly what the running app receives.
+// resolveMessagesConfig, resolveInboxConfig and resolveModemConfig resolve the
+// per-domain configs through the fx binding layer, i.e. exactly what the
+// running app receives.
 func resolveMessagesConfig(t *testing.T) messages.Config {
 	t.Helper()
 
@@ -28,6 +30,24 @@ func resolveMessagesConfig(t *testing.T) messages.Config {
 	)
 	if err := app.Err(); err != nil {
 		t.Fatalf("resolve messages config: %v", err)
+	}
+
+	return got
+}
+
+func resolveInboxConfig(t *testing.T) inbox.Config {
+	t.Helper()
+
+	var got inbox.Config
+	app := fx.New(
+		fx.NopLogger,
+		config.Module(),
+		fx.Invoke(func(cfg inbox.Config) {
+			got = cfg
+		}),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("resolve inbox config: %v", err)
 	}
 
 	return got
@@ -52,12 +72,17 @@ func resolveModemConfig(t *testing.T) modem.Config {
 }
 
 // TestDefaultInboundAndCmgd pins the built-in defaults of the knobs the inbound
-// SMS path depends on.
+// SMS path depends on: the inbox reassembly window and eviction sweep, and the
+// modem store-deletion/recovery knobs (a DIFFERENT sweep - see the inbox Config
+// doc comment).
 func TestDefaultInboundAndCmgd(t *testing.T) {
 	cfg := config.Default()
 
-	if got := cfg.Messages.Inbound.ReassemblyTimeout; got != 5*time.Minute {
-		t.Errorf("Default().Messages.Inbound.ReassemblyTimeout = %v, want 5m", got)
+	if got := cfg.Inbox.ReassemblyTimeout; got != 5*time.Minute {
+		t.Errorf("Default().Inbox.ReassemblyTimeout = %v, want 5m", got)
+	}
+	if got := cfg.Inbox.SweepInterval; got != time.Second {
+		t.Errorf("Default().Inbox.SweepInterval = %v, want 1s", got)
 	}
 	if got := cfg.Modem.Cmgd.RetryAttempts; got != 3 {
 		t.Errorf("Default().Modem.Cmgd.RetryAttempts = %d, want 3", got)
@@ -80,19 +105,27 @@ func TestDefaultInboundAndCmgd(t *testing.T) {
 // TestNewInboundAndCmgdEnvOverridesAndFXBinding pins that the new knobs are
 // BOUND in the module (not merely declared) and can be overridden per key,
 // including the zero values that disable the reassembly window and the retry
-// loop.
+// loop. The two sweeps are pinned side by side: INBOX__SWEEP_INTERVAL moves
+// the reassembly/dedupe eviction, MODEM__STORE__SWEEP_INTERVAL the modem
+// retained-entry recovery - neither key reaches the other domain.
 func TestNewInboundAndCmgdEnvOverridesAndFXBinding(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
-	t.Setenv("MESSAGES__INBOUND__REASSEMBLY_TIMEOUT", "90s")
+	t.Setenv("INBOX__REASSEMBLY_TIMEOUT", "90s")
+	t.Setenv("INBOX__SWEEP_INTERVAL", "2s")
 	t.Setenv("MODEM__CMGD__RETRY_ATTEMPTS", "5")
 	t.Setenv("MODEM__CMGD__RETRY_BACKOFF", "250ms")
 	t.Setenv("MODEM__STORE__MEMORY", "ME")
 	t.Setenv("MODEM__STORE__SWEEP_INTERVAL", "15s")
 
-	messagesCfg := resolveMessagesConfig(t)
-	if got := messagesCfg.Inbound.ReassemblyTimeout; got != 90*time.Second {
-		t.Errorf("MESSAGES__INBOUND__REASSEMBLY_TIMEOUT bound to %v, want 90s", got)
+	inboxCfg := resolveInboxConfig(t)
+	if got := inboxCfg.ReassemblyTimeout; got != 90*time.Second {
+		t.Errorf("INBOX__REASSEMBLY_TIMEOUT bound to %v, want 90s", got)
 	}
+	if got := inboxCfg.SweepInterval; got != 2*time.Second {
+		t.Errorf("INBOX__SWEEP_INTERVAL bound to %v, want 2s", got)
+	}
+
+	messagesCfg := resolveMessagesConfig(t)
 	if got := messagesCfg.PollInterval; got != time.Second {
 		t.Errorf("Messages.PollInterval = %v, want the untouched default 1s", got)
 	}
@@ -116,17 +149,21 @@ func TestNewInboundAndCmgdEnvOverridesAndFXBinding(t *testing.T) {
 }
 
 // TestNewInboundAndCmgdZeroValues pins the zero boundary: a disabled reassembly
-// window and a single CMGD attempt map through unchanged (the messages service
-// then applies its own non-positive fallback).
+// window and sweep, and a single CMGD attempt, map through unchanged (the inbox
+// service then applies its own non-positive fallbacks).
 func TestNewInboundAndCmgdZeroValues(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
-	t.Setenv("MESSAGES__INBOUND__REASSEMBLY_TIMEOUT", "0s")
+	t.Setenv("INBOX__REASSEMBLY_TIMEOUT", "0s")
+	t.Setenv("INBOX__SWEEP_INTERVAL", "0s")
 	t.Setenv("MODEM__CMGD__RETRY_ATTEMPTS", "0")
 	t.Setenv("MODEM__CMGD__RETRY_BACKOFF", "0s")
 
-	messagesCfg := resolveMessagesConfig(t)
-	if got := messagesCfg.Inbound.ReassemblyTimeout; got != 0 {
-		t.Errorf("Messages.Inbound.ReassemblyTimeout = %v, want 0", got)
+	inboxCfg := resolveInboxConfig(t)
+	if got := inboxCfg.ReassemblyTimeout; got != 0 {
+		t.Errorf("Inbox.ReassemblyTimeout = %v, want 0", got)
+	}
+	if got := inboxCfg.SweepInterval; got != 0 {
+		t.Errorf("Inbox.SweepInterval = %v, want 0", got)
 	}
 
 	modemCfg := resolveModemConfig(t)
@@ -142,7 +179,8 @@ func TestNewRejectsInvalidInboundDuration(t *testing.T) {
 		key   string
 		field string
 	}{
-		{key: "MESSAGES__INBOUND__REASSEMBLY_TIMEOUT", field: "messages.inbound.reassembly_timeout"},
+		{key: "INBOX__REASSEMBLY_TIMEOUT", field: "inbox.reassembly_timeout"},
+		{key: "INBOX__SWEEP_INTERVAL", field: "inbox.sweep_interval"},
 		{key: "MODEM__CMGD__RETRY_BACKOFF", field: "modem.cmgd.retry_backoff"},
 	}
 
@@ -184,9 +222,15 @@ func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
 		wantAttempts int
 	}{
 		{
-			key:          "MESSAGES__INBOUND__REASSEMBLY_TIMEOUT",
+			key:          "INBOX__REASSEMBLY_TIMEOUT",
 			documented:   "5m",
-			wantDuration: cfg.Messages.Inbound.ReassemblyTimeout,
+			wantDuration: cfg.Inbox.ReassemblyTimeout,
+			wantAttempts: -1,
+		},
+		{
+			key:          "INBOX__SWEEP_INTERVAL",
+			documented:   "1s",
+			wantDuration: cfg.Inbox.SweepInterval,
 			wantAttempts: -1,
 		},
 		{

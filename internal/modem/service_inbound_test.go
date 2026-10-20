@@ -748,13 +748,19 @@ func TestInboundRoute_HandlerSaturationDropsIndications(t *testing.T) {
 	waitForCount(t, "the saturation drop", func() bool {
 		return modem.InboundPartDropped(metrics, dropHandlerSaturated) == 1
 	})
-	if reads, _ := scripted.counters(); reads != 4 {
-		t.Errorf("+CMGR attempts = %d, want 4 - the dropped indication never reads", reads)
-	}
 
+	// The read count is only stable once every admitted handler returned:
+	// each of the four admitted handlers increments the gauge on admission,
+	// reads its store entry exactly ONCE and only then releases the slot, so
+	// inflight==0 pins all four reads as complete (checking earlier races the
+	// reads of handlers that have not been scheduled yet). The dropped
+	// indication never reads at all.
 	waitForCount(t, "every handler to return", func() bool {
 		return modem.InboundHandlersInflight(metrics) == 0
 	})
+	if reads, _ := scripted.counters(); reads != 4 {
+		t.Errorf("+CMGR attempts = %d, want 4 - the dropped indication never reads", reads)
+	}
 
 	// The four admitted parts are still delivered: saturation only drops the
 	// indications that had no slot.

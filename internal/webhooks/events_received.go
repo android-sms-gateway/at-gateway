@@ -10,7 +10,7 @@ import (
 //
 // Only the two INBOUND emitters report an acceptance verdict: EmitSmsReceived
 // and EmitSmsDataReceived return the per-webhook enqueue outcome
-// (TrackedEmission) because their consumer - the messages inbound reassembler -
+// (TrackedEmission) because their consumer - the inbox reassembler -
 // has to know exactly which webhooks already hold a queue item for a message
 // id, so a modem re-notification re-enqueues ONLY the failed ones.
 //
@@ -23,7 +23,7 @@ import (
 // InboundEvent is the input of the two INBOUND webhook emitters
 // (sms:received and sms:data-received). It carries the assembled content of a
 // message read from the modem store, never a single part: the reassembler in
-// the messages module has already merged the concatenated parts.
+// the inbox module has already merged the concatenated parts.
 //
 // The wire payloads are built from the client-go DTOs, so the field names and
 // omission are wire-identical to the Android gateway and the server.

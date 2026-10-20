@@ -8,6 +8,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/config"
 	"github.com/android-sms-gateway/at-gateway/internal/db"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/inbox"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/ping"
@@ -67,6 +68,7 @@ func run(ctx context.Context, version healthfx.Version) error {
 		//
 		// BUSINESS MODULES
 		modem.Module(true),
+		inbox.Module(true),
 		messages.Module(true),
 		auth.Module(),
 		devices.Module(),

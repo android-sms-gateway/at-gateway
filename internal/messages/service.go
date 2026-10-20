@@ -25,21 +25,6 @@ type Service struct {
 	modemSvc    *modem.Service
 	webhooksSvc *webhooks.Service
 
-	// inboundGroups holds the parts of every INCOMPLETE concatenated inbound
-	// message, keyed by (sender, reference width, reference). It lives next to
-	// the consumer because only the Run loop goroutine touches it.
-	inboundGroups map[inboundKey]*inboundGroup
-	// inboundDedup damps modem re-notifications per webhook (see
-	// inboundDeduper).
-	inboundDedup *inboundDeduper
-	// startedAt marks the process start; together with inboundPostRestart it
-	// drives the post-restart observability window.
-	startedAt time.Time
-	// inboundPostRestart is true while the process is inside the post-start
-	// observation window, i.e. while the dedupe has no memory of a previous
-	// process.
-	inboundPostRestart bool
-
 	metrics *Metrics
 
 	logger *zap.Logger
@@ -64,9 +49,6 @@ func NewService(
 	if config.DefaultRegion == "" {
 		config.DefaultRegion = defaultRegion
 	}
-	if config.Inbound.ReassemblyTimeout <= 0 {
-		config.Inbound.ReassemblyTimeout = defaultInboundReassemblyTimeout
-	}
 
 	return &Service{
 		config:   config,
@@ -75,11 +57,6 @@ func NewService(
 		devicesSvc:  devicesSvc,
 		modemSvc:    modemSvc,
 		webhooksSvc: webhooksSvc,
-
-		inboundGroups:      make(map[inboundKey]*inboundGroup),
-		inboundDedup:       newInboundDeduper(),
-		startedAt:          time.Now().UTC(),
-		inboundPostRestart: true,
 
 		metrics: metrics,
 
@@ -185,10 +162,11 @@ func (s *Service) Cancel(ctx context.Context, extID string) (*Message, error) {
 }
 
 // Run processes the outbox until ctx is canceled: it claims and sends pending
-// messages on the poll ticker, applies incoming modem delivery reports and
-// reassembles incoming SMS parts into inbound webhook events. All state
-// transitions happen on this goroutine, so database work is serialized; it
-// returns when the context is done.
+// messages on the poll ticker and applies incoming modem delivery reports. The
+// inbound SMS pipeline (and its single consumer of the modem's inbound-parts
+// channel) runs in its own module, internal/inbox. All state transitions happen
+// on this goroutine, so database work is serialized; it returns when the
+// context is done.
 func (s *Service) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.config.PollInterval)
 	defer ticker.Stop()
@@ -196,18 +174,13 @@ func (s *Service) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			s.abortInbound()
 			return nil
 		case report := <-s.modemSvc.DeliveryReports():
 			s.handleDeliveryReport(ctx, report)
-		case part := <-s.modemSvc.InboundParts():
-			s.handleInboundPart(part, time.Now().UTC())
 		case <-ticker.C:
-			s.sweepInbound(time.Now().UTC())
 			for s.processPending(ctx) {
 				select {
 				case <-ctx.Done():
-					s.abortInbound()
 					return nil
 				default:
 				}
