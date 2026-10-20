@@ -62,14 +62,17 @@ type databaseConfig struct {
 }
 
 type messagesConfig struct {
-	PollInterval  time.Duration         `koanf:"poll_interval"`
-	MaxSegments   int                   `koanf:"max_segments"`
-	DefaultRegion string                `koanf:"default_region"`
-	Inbound       messagesInboundConfig `koanf:"inbound"`
+	PollInterval  time.Duration `koanf:"poll_interval"`
+	MaxSegments   int           `koanf:"max_segments"`
+	DefaultRegion string        `koanf:"default_region"`
 }
 
-type messagesInboundConfig struct {
+// inboxConfig is the inbound SMS pipeline configuration (internal/inbox). Its
+// sweep_interval is the reassembly/dedupe EVICTION cadence - a DIFFERENT knob
+// from modem.store.sweep_interval, the modem retained-entry RECOVERY sweep.
+type inboxConfig struct {
 	ReassemblyTimeout time.Duration `koanf:"reassembly_timeout"`
+	SweepInterval     time.Duration `koanf:"sweep_interval"`
 }
 
 type webhooksConfig struct {
@@ -100,6 +103,7 @@ type Config struct {
 	Device   deviceConfig   `koanf:"device"`
 	Database databaseConfig `koanf:"database"`
 	Messages messagesConfig `koanf:"messages"`
+	Inbox    inboxConfig    `koanf:"inbox"`
 	Webhooks webhooksConfig `koanf:"webhooks"`
 	Ping     pingConfig     `koanf:"ping"`
 }
@@ -153,9 +157,14 @@ func Default() Config {
 			PollInterval:  time.Second,
 			MaxSegments:   10,
 			DefaultRegion: "RU",
-			Inbound: messagesInboundConfig{
-				ReassemblyTimeout: 5 * time.Minute,
-			},
+		},
+		Inbox: inboxConfig{
+			// The reassembly window tolerates a congested service centre whose
+			// concatenated parts arrive minutes apart.
+			ReassemblyTimeout: 5 * time.Minute,
+			// The reassembly/dedupe eviction cadence; it deliberately decouples
+			// inbound eviction from Messages.PollInterval.
+			SweepInterval: time.Second,
 		},
 		Webhooks: webhooksConfig{
 			RetryCount: 15,

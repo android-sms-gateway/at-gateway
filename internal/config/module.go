@@ -5,6 +5,7 @@ import (
 
 	"github.com/android-sms-gateway/at-gateway/internal/auth"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/inbox"
 	"github.com/android-sms-gateway/at-gateway/internal/messages"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/ping"
@@ -79,9 +80,12 @@ func Module() fx.Option {
 					PollInterval:  cfg.Messages.PollInterval,
 					MaxSegments:   cfg.Messages.MaxSegments,
 					DefaultRegion: cfg.Messages.DefaultRegion,
-					Inbound: messages.InboundConfig{
-						ReassemblyTimeout: cfg.Messages.Inbound.ReassemblyTimeout,
-					},
+				}
+			},
+			func(cfg Config) inbox.Config {
+				return inbox.Config{
+					ReassemblyTimeout: cfg.Inbox.ReassemblyTimeout,
+					SweepInterval:     cfg.Inbox.SweepInterval,
 				}
 			},
 			func(cfg Config) webhooks.Config {
