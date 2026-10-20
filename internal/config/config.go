@@ -22,16 +22,22 @@ type openAPIConfig struct {
 }
 
 type modemConfig struct {
-	Port           string          `koanf:"port"`
-	BaudRate       int             `koanf:"baud_rate"`
-	InitTimeout    time.Duration   `koanf:"init_timeout"`
-	CommandTimeout time.Duration   `koanf:"command_timeout"`
-	Cmgd           modemCmgdConfig `koanf:"cmgd"`
+	Port           string           `koanf:"port"`
+	BaudRate       int              `koanf:"baud_rate"`
+	InitTimeout    time.Duration    `koanf:"init_timeout"`
+	CommandTimeout time.Duration    `koanf:"command_timeout"`
+	Cmgd           modemCmgdConfig  `koanf:"cmgd"`
+	Store          modemStoreConfig `koanf:"store"`
 }
 
 type modemCmgdConfig struct {
 	RetryAttempts int           `koanf:"retry_attempts"`
 	RetryBackoff  time.Duration `koanf:"retry_backoff"`
+}
+
+type modemStoreConfig struct {
+	Memory        string        `koanf:"memory"`
+	SweepInterval time.Duration `koanf:"sweep_interval"`
 }
 
 type storageConfig struct {
@@ -122,6 +128,10 @@ func Default() Config {
 			Cmgd: modemCmgdConfig{
 				RetryAttempts: 3,
 				RetryBackoff:  2 * time.Second,
+			},
+			Store: modemStoreConfig{
+				Memory:        "SM",
+				SweepInterval: 60 * time.Second,
 			},
 		},
 		Storage: storageConfig{

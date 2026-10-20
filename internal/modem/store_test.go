@@ -3,12 +3,128 @@ package modem_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 )
+
+// storeSelectModem records every +CPMS selection and answers the store
+// commands, so a test can assert WHICH preferred store each read/delete/list
+// selected and that the selection is CACHED across operations on the same
+// store.
+type storeSelectModem struct {
+	selections []string
+	cmglLines  []string
+}
+
+func (m *storeSelectModem) respond(w string) [][]byte {
+	if mem, found := strings.CutPrefix(w, "AT+CPMS="); found {
+		m.selections = append(m.selections, strings.TrimSpace(mem))
+
+		return [][]byte{okResponse("OK")}
+	}
+	if resps := initResponder(w); resps != nil {
+		return resps
+	}
+
+	switch {
+	case strings.HasPrefix(w, "AT+CMGR="):
+		return [][]byte{okResponse(cmgrHeader), okResponse(inboundTextPDU), okResponse("OK")}
+	case strings.HasPrefix(w, "AT+CMGD="):
+		return [][]byte{okResponse("OK")}
+	case strings.HasPrefix(w, "AT+CMGL="):
+		responses := make([][]byte, 0, len(m.cmglLines)+1)
+		for _, line := range m.cmglLines {
+			responses = append(responses, okResponse(line))
+		}
+
+		return append(responses, okResponse("OK"))
+	}
+
+	return nil
+}
+
+// TestReadStoredMessage_SelectsNotifiedStoreAndCaches pins the store-selection
+// contract: +CMGR is issued against the PREFERRED store, so the notified store
+// is selected first via +CPMS - and selected only when it CHANGES (a second
+// read of the same store must not re-issue +CPMS).
+func TestReadStoredMessage_SelectsNotifiedStoreAndCaches(t *testing.T) {
+	modem := &storeSelectModem{}
+	commands, scratch := newCommands(t, modem.respond)
+
+	for _, index := range []int{1, 2} {
+		if _, err := commands.ReadStoredMessage("ME", index); err != nil {
+			t.Fatalf("ReadStoredMessage(ME, %d): %v", index, err)
+		}
+	}
+	if _, err := commands.ReadStoredMessage("SM", 3); err != nil {
+		t.Fatalf("ReadStoredMessage(SM, 3): %v", err)
+	}
+
+	want := []string{`"ME"`, `"SM"`}
+	if !slices.Equal(modem.selections, want) {
+		t.Errorf("+CPMS selections = %v, want %v (cached across reads of the same store)", modem.selections, want)
+	}
+
+	writes := strings.Join(scratch.getWrites(), "")
+	if !strings.Contains(writes, "AT+CPMS=\"ME\"\r\nAT+CMGR=1\r\n") {
+		t.Errorf("wire does not select ME before the first read: %q", writes)
+	}
+}
+
+// TestDeleteStoredMessage_SelectsNotifiedStore pins that the delete also primes
+// the preferred store, so a retried delete after a re-selection targets the
+// same store the read used.
+func TestDeleteStoredMessage_SelectsNotifiedStore(t *testing.T) {
+	modem := &storeSelectModem{}
+	commands, scratch := newCommands(t, modem.respond)
+
+	if err := commands.DeleteStoredMessage("MT", 7); err != nil {
+		t.Fatalf("DeleteStoredMessage: %v", err)
+	}
+
+	if !slices.Equal(modem.selections, []string{`"MT"`}) {
+		t.Errorf("+CPMS selections = %v, want [\"MT\"]", modem.selections)
+	}
+	writes := strings.Join(scratch.getWrites(), "")
+	if !strings.Contains(writes, "AT+CPMS=\"MT\"\r\nAT+CMGD=7\r\n") {
+		t.Errorf("wire does not select MT before the delete: %q", writes)
+	}
+}
+
+// TestListStoredMessages pins the recovery listing: AT+CMGL=4 lists ALL
+// messages of the preferred store and the <index> of every "+CMGL:" header is
+// returned, while a malformed header is skipped rather than aborting.
+func TestListStoredMessages(t *testing.T) {
+	modem := &storeSelectModem{cmglLines: []string{
+		`+CMGL: 2,1,"",42`,
+		inboundTextPDU,
+		`+CMGL: 5,1,"",42`,
+		inboundTextPDU,
+		`+CMGL: not-a-number,1,"",42`,
+		inboundTextPDU,
+	}}
+	commands, scratch := newCommands(t, modem.respond)
+
+	indices, err := commands.ListStoredMessages("SM")
+	if err != nil {
+		t.Fatalf("ListStoredMessages: %v", err)
+	}
+	if want := []int{2, 5}; !slices.Equal(indices, want) {
+		t.Errorf("indices = %v, want %v", indices, want)
+	}
+
+	if !slices.Equal(modem.selections, []string{`"SM"`}) {
+		t.Errorf("+CPMS selections = %v, want [\"SM\"]", modem.selections)
+	}
+	writes := strings.Join(scratch.getWrites(), "")
+	if !strings.Contains(writes, "AT+CMGL=4\r\n") {
+		t.Errorf("wire = %q, want AT+CMGL=4", writes)
+	}
+}
 
 // cmgrHeader is the SIM800's real +CMGR response head (3GPP TS 27.005 3.4.2
 // PDU mode with the optional <alpha> field emitted): "<stat>,<alpha>,
@@ -107,7 +223,7 @@ func TestReadStoredMessage_DropsLeakedURCHeads(t *testing.T) {
 			responder := &storeResponder{readLines: tt.lines}
 			commands, scratch := newCommands(t, responder.respond)
 
-			got, err := commands.ReadStoredMessage(3)
+			got, err := commands.ReadStoredMessage("SM", 3)
 			if err != nil {
 				t.Fatalf("ReadStoredMessage: %v", err)
 			}
@@ -139,7 +255,7 @@ func TestReadStoredMessage_PositionalBodyLine(t *testing.T) {
 	}}
 	commands, _ := newCommands(t, responder.respond)
 
-	got, err := commands.ReadStoredMessage(1)
+	got, err := commands.ReadStoredMessage("SM", 1)
 	if err != nil {
 		t.Fatalf("ReadStoredMessage: %v", err)
 	}
@@ -167,7 +283,7 @@ func TestReadStoredMessage_MissingPDULine(t *testing.T) {
 			responder := &storeResponder{readLines: tt.lines}
 			commands, _ := newCommands(t, responder.respond)
 
-			got, err := commands.ReadStoredMessage(1)
+			got, err := commands.ReadStoredMessage("SM", 1)
 			if err == nil {
 				t.Fatalf("ReadStoredMessage = %q, want error", got)
 			}
@@ -191,7 +307,7 @@ func TestReadStoredMessage_RealSIM800Capture(t *testing.T) {
 	responder := &storeResponder{readLines: []string{cmgrCapturedHeader, cmgrCapturedPDU}}
 	commands, _ := newCommands(t, responder.respond)
 
-	got, err := commands.ReadStoredMessage(1)
+	got, err := commands.ReadStoredMessage("SM", 1)
 	if err != nil {
 		t.Fatalf("ReadStoredMessage: %v", err)
 	}
@@ -218,7 +334,7 @@ func TestReadStoredMessage_LengthFieldIsNeverAPDU(t *testing.T) {
 	responder := &storeResponder{readLines: []string{cmgrCapturedHeader}}
 	commands, _ := newCommands(t, responder.respond)
 
-	got, err := commands.ReadStoredMessage(1)
+	got, err := commands.ReadStoredMessage("SM", 1)
 	if err == nil {
 		t.Fatalf("ReadStoredMessage = %q, want error - the length field is not a PDU", got)
 	}
@@ -238,7 +354,7 @@ func TestReadStoredMessage_InlinePDUWithoutBodyLine(t *testing.T) {
 	responder := &storeResponder{readLines: []string{cmgrHeader + "," + inboundTextPDU}}
 	commands, _ := newCommands(t, responder.respond)
 
-	got, err := commands.ReadStoredMessage(1)
+	got, err := commands.ReadStoredMessage("SM", 1)
 	if err != nil {
 		t.Fatalf("ReadStoredMessage: %v", err)
 	}
@@ -292,7 +408,7 @@ func TestReadStoredMessage_SingleArgumentForm(t *testing.T) {
 	modem321 := &cms321Modem{}
 	commands, scratch := newCommands(t, modem321.respond)
 
-	got, err := commands.ReadStoredMessage(3)
+	got, err := commands.ReadStoredMessage("SM", 3)
 	if err != nil {
 		t.Fatalf("ReadStoredMessage: %v", err)
 	}
@@ -336,7 +452,7 @@ func TestReadStoredMessage_ConcurrentWithSend(t *testing.T) {
 	}
 	reads := make(chan readResult, 1)
 	go func() {
-		pdu, err := commands.ReadStoredMessage(1)
+		pdu, err := commands.ReadStoredMessage("SM", 1)
 		reads <- readResult{pdu: pdu, err: err}
 	}()
 
@@ -369,7 +485,7 @@ func TestDeleteStoredMessage_UsesTheStoreReference(t *testing.T) {
 	responder := &storeResponder{}
 	commands, scratch := newCommands(t, responder.respond)
 
-	if err := commands.DeleteStoredMessage(4); err != nil {
+	if err := commands.DeleteStoredMessage("SM", 4); err != nil {
 		t.Fatalf("DeleteStoredMessage: %v", err)
 	}
 	if responder.deletes != 1 {
@@ -390,7 +506,7 @@ func TestDeleteStoredMessage_UsesTheStoreReference(t *testing.T) {
 	}
 	commands, _ = newCommands(t, respond)
 
-	err := commands.DeleteStoredMessage(4)
+	err := commands.DeleteStoredMessage("SM", 4)
 	if !errors.Is(err, modem.ErrInitFailed) {
 		t.Fatalf("error = %v, want ErrInitFailed", err)
 	}
@@ -439,7 +555,7 @@ func TestDeleteStoredMessage_SingleArgumentForm(t *testing.T) {
 	modem321 := &cmgdSigModem{}
 	commands, scratch := newCommands(t, modem321.respond)
 
-	if err := commands.DeleteStoredMessage(3); err != nil {
+	if err := commands.DeleteStoredMessage("SM", 3); err != nil {
 		t.Fatalf("DeleteStoredMessage: %v", err)
 	}
 	if modem321.twoArgDeletes != 0 {
@@ -457,22 +573,24 @@ func TestDeleteStoredMessage_SingleArgumentForm(t *testing.T) {
 	}
 }
 
-// TestParseStoredReference pins the +CMTI head parser: the memory name maps to
-// its numeric form (quoted or unquoted) and a malformed head is rejected with
-// the sentinel instead of indexing the store at a wrong position.
+// TestParseStoredReference pins the +CMTI head parser: the memory NAME is
+// returned uppercased (quoted or unquoted; the exact form +CPMS accepts) and a
+// malformed head is rejected with the sentinel instead of indexing the store at
+// a wrong position.
 func TestParseStoredReference(t *testing.T) {
 	tests := []struct {
 		name      string
 		head      string
-		wantMem   int
+		wantMem   string
 		wantIndex int
 		wantErr   bool
 	}{
-		{name: "quoted ME", head: `+CMTI: "ME",1`, wantMem: 0, wantIndex: 1},
-		{name: "unquoted ME", head: "+CMTI: ME,12", wantMem: 0, wantIndex: 12},
-		{name: "SM alias", head: `+CMTI: "SM",0`, wantMem: 0, wantIndex: 0},
-		{name: "MT alias", head: `+CMTI: "MT",7`, wantMem: 1, wantIndex: 7},
-		{name: "padded fields", head: `+CMTI: "ME" , 5`, wantMem: 0, wantIndex: 5},
+		{name: "quoted ME", head: `+CMTI: "ME",1`, wantMem: "ME", wantIndex: 1},
+		{name: "unquoted ME", head: "+CMTI: ME,12", wantMem: "ME", wantIndex: 12},
+		{name: "SM alias", head: `+CMTI: "SM",0`, wantMem: "SM", wantIndex: 0},
+		{name: "MT alias", head: `+CMTI: "MT",7`, wantMem: "MT", wantIndex: 7},
+		{name: "lowercase normalized", head: `+CMTI: "me",3`, wantMem: "ME", wantIndex: 3},
+		{name: "padded fields", head: `+CMTI: "ME" , 5`, wantMem: "ME", wantIndex: 5},
 		{name: "missing index", head: `+CMTI: "ME"`, wantErr: true},
 		{name: "unknown memory", head: `+CMTI: "XX",1`, wantErr: true},
 		{name: "non-numeric index", head: `+CMTI: "ME",abc`, wantErr: true},
@@ -485,7 +603,7 @@ func TestParseStoredReference(t *testing.T) {
 			memory, index, err := modem.ParseStoredReference(tt.head)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("ParseStoredReference(%q) = (%d, %d), want error", tt.head, memory, index)
+					t.Fatalf("ParseStoredReference(%q) = (%q, %d), want error", tt.head, memory, index)
 				}
 				if !errors.Is(err, modem.ErrNotStoredReference) {
 					t.Errorf("error = %v, want ErrNotStoredReference", err)
@@ -497,7 +615,7 @@ func TestParseStoredReference(t *testing.T) {
 				t.Fatalf("ParseStoredReference(%q): %v", tt.head, err)
 			}
 			if memory != tt.wantMem || index != tt.wantIndex {
-				t.Errorf("reference = (%d, %d), want (%d, %d)", memory, index, tt.wantMem, tt.wantIndex)
+				t.Errorf("reference = (%q, %d), want (%q, %d)", memory, index, tt.wantMem, tt.wantIndex)
 			}
 		})
 	}

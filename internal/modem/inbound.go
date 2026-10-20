@@ -23,9 +23,14 @@ const (
 	concatRefWidth8  = 8
 	concatRefWidth16 = 16
 
-	// portDataLen is the payload length of both port IEs: one data octet
-	// (always 0x00 for the 8-bit form) plus the port.
-	portDataLen = 2
+	// portDataLen8 is the payload length of the 8-bit destination port IE
+	// (IEI 0x04): one octet of DESTINATION port followed by one octet of
+	// originator port (3GPP TS 23.040 9.2.3.24.4).
+	portDataLen8 = 2
+	// portDataLen16 is the payload length of the 16-bit destination port IE
+	// (IEI 0x05): a two-octet DESTINATION port followed by a two-octet
+	// originator port (3GPP TS 23.040 9.2.3.24.5).
+	portDataLen16 = 4
 
 	// minInboundSCTSYear is the earliest plausible year of a TP-SCTS stamp.
 	// A stamp before it is treated as absent (see sctsUTC).
@@ -158,16 +163,18 @@ func sctsUTC(scts tpdu.Timestamp) (time.Time, bool) {
 	return scts.UTC(), true
 }
 
-// destinationPort extracts the destination port from the user data header: the
+// destinationPort extracts the DESTINATION port from the user data header: the
 // 16-bit IEI 0x05 wins over the 8-bit IEI 0x04 when a header carries both.
-// A port IE with a malformed payload length is ignored.
+// In both IEs the destination port comes FIRST and the originator port second
+// (3GPP TS 23.040 9.2.3.24.4/24.5), so reading the second octet of the 8-bit
+// form yields the ORIGINATOR port. A port IE with a non-conformant payload
+// length (anything but 2 octets for 0x04, 4 octets for 0x05) is ignored.
 func destinationPort(udh tpdu.UserDataHeader) (uint16, bool) {
-	if ie, ok := udh.IE(ieiPort16); ok && len(ie.Data) == portDataLen {
-		return binary.BigEndian.Uint16(ie.Data), true
+	if ie, ok := udh.IE(ieiPort16); ok && len(ie.Data) == portDataLen16 {
+		return binary.BigEndian.Uint16(ie.Data[:2]), true
 	}
-	if ie, ok := udh.IE(ieiPort8); ok && len(ie.Data) == portDataLen {
-		// 8-bit form: the leading data octet is 0x00 and the port follows.
-		return uint16(ie.Data[1]), true
+	if ie, ok := udh.IE(ieiPort8); ok && len(ie.Data) == portDataLen8 {
+		return uint16(ie.Data[0]), true
 	}
 
 	return 0, false

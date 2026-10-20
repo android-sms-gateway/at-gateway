@@ -43,15 +43,41 @@ const inboundChannelCapacity = 64
 //     were deleted and which were left readable in the modem store.
 type storeModem struct {
 	defaultPDU string
+	// stores maps a store NAME (ME, SM, MT) to the entries AT+CMGL=4 reports
+	// for it, because the preferred storage selects which store a listing
+	// answers for. A successfully deleted index is REMOVED from its store, so
+	// each store shrinks exactly like a real modem's and a repeated sweep does
+	// not re-read an entry it already delivered.
+	stores map[string][]int
+	// listErrors names the stores AT+CMGL=4 fails for, so a test can pin that
+	// an unreadable store does not blind the sweep to the others.
+	listErrors map[string]bool
 
 	mu             sync.Mutex
+	selected       string
 	reads          int
 	deletes        int
+	lists          int
 	deleteFailures int
 	deletedIndexes []int
+	// deletedStores is the preferred store AT+CMGD ran against, zipped with
+	// deletedIndexes: a delete is only "for index N" evidence once the STORE it
+	// was issued against is known too.
+	deletedStores []string
+	listedStores  []string
 }
 
 func (m *storeModem) respond(w string) [][]byte {
+	// Handled BEFORE initResponder, which answers +CPMS with a bare OK: this
+	// modem must record WHICH store became preferred so a listing, read or
+	// delete acts on that store's own entries.
+	if mem, found := strings.CutPrefix(w, "AT+CPMS="); found {
+		m.mu.Lock()
+		m.selected = strings.Trim(strings.TrimSpace(mem), `"`)
+		m.mu.Unlock()
+
+		return [][]byte{okResponse("OK")}
+	}
 	if resps := initResponder(w); resps != nil {
 		return resps
 	}
@@ -75,9 +101,36 @@ func (m *storeModem) respond(w string) [][]byte {
 		return m.readStore(w)
 	case strings.HasPrefix(w, "AT+CMGD="):
 		return m.deleteStore(w)
+	case strings.HasPrefix(w, "AT+CMGL="):
+		return m.listStore()
 	}
 
 	return nil
+}
+
+// listStore answers AT+CMGL=4 with one "+CMGL: <index>,...,<length>" header and
+// its PDU body per retained index OF THE PREFERRED STORE.
+func (m *storeModem) listStore() [][]byte {
+	m.mu.Lock()
+	m.lists++
+	m.listedStores = append(m.listedStores, m.selected)
+	indices := append([]int(nil), m.stores[m.selected]...)
+	failed := m.listErrors[m.selected]
+	m.mu.Unlock()
+
+	if failed {
+		return [][]byte{okResponse("+CMS ERROR: 321")}
+	}
+
+	responses := make([][]byte, 0, len(indices)*2+1)
+	for _, index := range indices {
+		responses = append(responses,
+			okResponse(`+CMGL: `+strconv.Itoa(index)+`,1,"",`+strconv.Itoa(len(m.defaultPDU)/2)),
+			okResponse(m.defaultPDU),
+		)
+	}
+
+	return append(responses, okResponse("OK"))
 }
 
 func (m *storeModem) readStore(w string) [][]byte {
@@ -103,9 +156,16 @@ func (m *storeModem) deleteStore(w string) [][]byte {
 	defer m.mu.Unlock()
 
 	m.deletes++
-	m.deletedIndexes = append(m.deletedIndexes, storeIndex(w))
+	index := storeIndex(w)
+	m.deletedIndexes = append(m.deletedIndexes, index)
+	m.deletedStores = append(m.deletedStores, m.selected)
 	if m.deletes <= m.deleteFailures {
 		return [][]byte{okResponse("+CMS ERROR: 321")}
+	}
+	// Only a modem seeded with per-store entries shrinks them; the inbound
+	// tests that never list a store leave the map nil.
+	if m.stores != nil {
+		m.stores[m.selected] = slices.DeleteFunc(m.stores[m.selected], func(i int) bool { return i == index })
 	}
 
 	return [][]byte{okResponse("OK")}
@@ -118,6 +178,30 @@ func (m *storeModem) counters() (int, int) {
 	return m.reads, m.deletes
 }
 
+// listCount returns how many AT+CMGL=4 listings the modem answered.
+func (m *storeModem) listCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.lists
+}
+
+// listedFor returns how many AT+CMGL=4 listings the modem answered for the
+// named store.
+func (m *storeModem) listedFor(store string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	listed := 0
+	for _, name := range m.listedStores {
+		if name == store {
+			listed++
+		}
+	}
+
+	return listed
+}
+
 // deletedFor reports whether AT+CMGD was ever issued for a store index, i.e.
 // whether the entry is gone from the modem store.
 func (m *storeModem) deletedFor(index int) bool {
@@ -125,6 +209,21 @@ func (m *storeModem) deletedFor(index int) bool {
 	defer m.mu.Unlock()
 
 	return slices.Contains(m.deletedIndexes, index)
+}
+
+// deletedInStore reports whether AT+CMGD was issued for index while the named
+// store was the preferred one, i.e. whether THAT store's entry is gone.
+func (m *storeModem) deletedInStore(store string, index int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i, deletedIndex := range m.deletedIndexes {
+		if deletedIndex == index && m.deletedStores[i] == store {
+			return true
+		}
+	}
+
+	return false
 }
 
 // storeIndex extracts the <index> argument of an AT+CMGR/AT+CMGD write. Both
@@ -464,6 +563,144 @@ func TestInboundRoute_UnreadableStoreEntryIsDropped(t *testing.T) {
 	case part := <-service.InboundParts():
 		t.Fatalf("unreadable entry reached the consumer: %+v", part)
 	default:
+	}
+}
+
+// TestStoreSweep_RecoversRetainedEntry pins the retained-entry recovery path:
+// an entry that is in the modem store but was NEVER +CMTI-notified - stored
+// before this run, or one whose indication was refused - is listed by the sweep
+// (AT+CMGL=4), read, delivered and deleted. Without the sweep such an entry sits
+// in the store forever, because +CMTI is emitted only for NEW messages.
+func TestStoreSweep_RecoversRetainedEntry(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU, stores: map[string][]int{"SM": {1}}}
+	cfg := inboundServiceConfig()
+	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
+	service, metrics, _ := newInboundService(t, cfg, scripted)
+
+	if part := receivePart(t, service); part.Content != "hello" {
+		t.Errorf("swept content = %q, want %q", part.Content, "hello")
+	}
+
+	waitForCount(t, "the swept entry to be deleted", func() bool {
+		_, deletes := scripted.counters()
+
+		return deletes == 1
+	})
+	if got := modem.StoreSweeps(metrics); got == 0 {
+		t.Error("store sweep counter = 0, want at least one non-empty sweep")
+	}
+}
+
+// TestStoreSweep_DeletesUndecodableEntry pins the sweep's decode-failure policy:
+// an entry whose PDU can never decode is DELETED by the sweep so a dead store
+// slot cannot accumulate (the +CMTI path deliberately keeps it for the sweep to
+// reclaim).
+func TestStoreSweep_DeletesUndecodableEntry(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU[:30], stores: map[string][]int{"SM": {1}}}
+	cfg := inboundServiceConfig()
+	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
+	service, metrics, _ := newInboundService(t, cfg, scripted)
+
+	waitForCount(t, "the swept undecodable entry to be deleted", func() bool {
+		_, deletes := scripted.counters()
+
+		return deletes == 1
+	})
+	if got := modem.InboundPartDropped(metrics, dropDecodeFailed); got == 0 {
+		t.Error("decode-failed drop = 0, want the swept entry counted")
+	}
+	select {
+	case part := <-service.InboundParts():
+		t.Fatalf("undecodable swept part reached the consumer: %+v", part)
+	default:
+	}
+}
+
+// TestStoreSweep_RecoversEntryFromEveryNotifiedStore pins that the sweep lists
+// EVERY store that can retain an entry, not just the one the latest +CMTI
+// named. A +CMTI names only the store ITS message landed in, so a sweep bound
+// to that store strands an entry retained in any store named EARLIER: the store
+// fills and its entry is never re-read or deleted.
+func TestStoreSweep_RecoversEntryFromEveryNotifiedStore(t *testing.T) {
+	scripted := &storeModem{
+		defaultPDU: inboundTextPDU,
+		stores:     map[string][]int{"SM": {1}, "ME": {2}},
+	}
+	cfg := inboundServiceConfig()
+	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
+	service, _, scratch := newInboundService(t, cfg, scripted)
+
+	// Name ME so it joins the tracked stores AFTER SM, but with an index the
+	// scripted modem refuses to read (index 0), so the +CMTI path delivers
+	// nothing: both parts below can only have come from the SWEEP.
+	pushURC(scratch, `+CMTI: "ME",0`)
+
+	for range 2 {
+		if part := receivePart(t, service); part.Content != "hello" {
+			t.Errorf("swept content = %q, want %q", part.Content, "hello")
+		}
+	}
+	waitForCount(t, "both stores to be swept", func() bool {
+		_, deletes := scripted.counters()
+
+		return deletes >= 2
+	})
+
+	if !scripted.deletedInStore("SM", 1) {
+		t.Error("the entry retained in SM was never deleted from SM")
+	}
+	if !scripted.deletedInStore("ME", 2) {
+		t.Error("the entry retained in ME was never deleted from ME")
+	}
+	if got := scripted.listedFor("SM"); got == 0 {
+		t.Error("AT+CMGL was never issued for SM, want the older store swept")
+	}
+}
+
+// TestStoreSweep_ListFailureDoesNotBlindOtherStores pins that a store which
+// cannot be listed is SKIPPED rather than aborting the pass: one unreadable
+// store must not make the retained entries of every other store unrecoverable.
+func TestStoreSweep_ListFailureDoesNotBlindOtherStores(t *testing.T) {
+	scripted := &storeModem{
+		defaultPDU: inboundTextPDU,
+		stores:     map[string][]int{"SM": {1}, "ME": {2}},
+		listErrors: map[string]bool{"SM": true},
+	}
+	cfg := inboundServiceConfig()
+	cfg.Store = modem.StoreConfig{Memory: "SM", SweepInterval: 25 * time.Millisecond}
+	service, _, scratch := newInboundService(t, cfg, scripted)
+
+	// Name ME so it joins the tracked stores AFTER SM, but with an index the
+	// scripted modem refuses to read (index 0), so the +CMTI path delivers
+	// nothing and the SWEEP is the only thing that can recover ME's entry.
+	pushURC(scratch, `+CMTI: "ME",0`)
+
+	// SM is listed first and fails, so this only arrives if the pass CONTINUES.
+	if part := receivePart(t, service); part.Content != "hello" {
+		t.Errorf("swept content = %q, want %q", part.Content, "hello")
+	}
+	waitForCount(t, "the readable store to be swept", func() bool {
+		return scripted.deletedInStore("ME", 2)
+	})
+	if scripted.deletedInStore("SM", 1) {
+		t.Error("the unreadable store's entry was deleted, want it left for the next pass")
+	}
+}
+
+// TestStoreSweep_DisabledByDefault pins that a zero sweep interval disables the
+// sweep entirely: the store is never listed, so a modem that does not answer
+// +CMGL is unaffected.
+func TestStoreSweep_DisabledByDefault(t *testing.T) {
+	scripted := &storeModem{defaultPDU: inboundTextPDU, stores: map[string][]int{"SM": {1}}}
+	_, metrics, _ := newInboundService(t, inboundServiceConfig(), scripted)
+
+	// Give a (disabled) sweep ample time to have fired if it were active.
+	time.Sleep(100 * time.Millisecond)
+	if got := scripted.listCount(); got != 0 {
+		t.Errorf("AT+CMGL sweeps = %d, want 0 with the sweep disabled", got)
+	}
+	if got := modem.StoreSweeps(metrics); got != 0 {
+		t.Errorf("store sweep counter = %v, want 0 with the sweep disabled", got)
 	}
 }
 
