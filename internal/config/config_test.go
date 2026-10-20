@@ -1,11 +1,13 @@
 package config_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/config"
+	"github.com/android-sms-gateway/at-gateway/internal/ping"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"go.uber.org/fx"
 )
@@ -115,6 +117,8 @@ func TestDefaultWebhooks(t *testing.T) {
 	}
 }
 
+// resolveWebhooksConfig and resolvePingConfig resolve the per-domain configs
+// through the fx binding layer, i.e. exactly what the running app receives.
 func resolveWebhooksConfig(t *testing.T) webhooks.Config {
 	t.Helper()
 
@@ -130,6 +134,61 @@ func resolveWebhooksConfig(t *testing.T) webhooks.Config {
 		t.Fatalf("resolve webhooks config: %v", err)
 	}
 	return got
+}
+
+func resolvePingConfig(t *testing.T) ping.Config {
+	t.Helper()
+
+	var got ping.Config
+	app := fx.New(
+		fx.NopLogger,
+		config.Module(),
+		fx.Invoke(func(cfg ping.Config) {
+			got = cfg
+		}),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("resolve ping config: %v", err)
+	}
+	return got
+}
+
+// TestDefaultPing pins the heartbeat default of the ping module: the ticker
+// must NOT ship dead, a zero default would make the system:ping event
+// unobservable without an explicit override.
+func TestDefaultPing(t *testing.T) {
+	cfg := config.Default()
+
+	if got := cfg.Ping.Interval; got != 60*time.Second {
+		t.Errorf("Default().Ping.Interval = %v, want 60s", got)
+	}
+}
+
+// TestNewPingKeyBindsTheInterval pins the env override path of the renamed key:
+// PING__INTERVAL reaches the running app through the fx binding layer.
+func TestNewPingKeyBindsTheInterval(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "90s")
+
+	got := resolvePingConfig(t)
+
+	if got.Interval != 90*time.Second {
+		t.Errorf("PING__INTERVAL bound to %v, want 90s", got.Interval)
+	}
+}
+
+// TestNewPingKeyZeroDisablesEmission pins the documented opt-out through the
+// binding layer: zero must survive unchanged, it is the switch that disables
+// the event entirely.
+func TestNewPingKeyZeroDisablesEmission(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "0s")
+
+	got := resolvePingConfig(t)
+
+	if got.Interval != 0 {
+		t.Errorf("ping.Config.Interval = %v, want 0 (the documented opt-out)", got.Interval)
+	}
 }
 
 func TestNewWebhooksEnvAndFXBinding(t *testing.T) {
@@ -212,5 +271,57 @@ func TestNewWebhooksRejectsInvalidDuration(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "webhooks.queue.request_timeout") {
 		t.Errorf("config.New() error = %q, want field path", err)
+	}
+}
+
+// TestNewRejectsInvalidPingInterval pins the validation surface of the ping
+// interval: a malformed duration fails startup with the field path, so a typo
+// never silently degrades into a dead ticker.
+func TestNewRejectsInvalidPingInterval(t *testing.T) {
+	t.Setenv("CONFIG_PATH", "")
+	t.Setenv("PING__INTERVAL", "not-a-duration")
+
+	_, err := config.New()
+	if err == nil {
+		t.Fatal("config.New() error = nil, want invalid duration error")
+	}
+	if !strings.Contains(err.Error(), "ping.interval") {
+		t.Errorf("config.New() error = %q, want the field path ping.interval", err)
+	}
+}
+
+// TestEnvExampleDocumentsPingIntervalWithDefault pins the operator surface: the
+// .env.example entry exists, carries the built-in default as its VALUE and
+// documents that same default in the comment block above it, so the
+// documentation cannot drift from the code.
+func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
+	const key = "PING__INTERVAL"
+	// The documented spelling is pinned literally (60s, not 1m); the assertion
+	// below compares it to the built-in default SEMANTICALLY, so a drift of
+	// either side fails.
+	const documented = "60s"
+
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+
+	lines := strings.Split(string(raw), "\n")
+	index := lineIndex(t, lines, key+"=")
+	if got := strings.TrimSpace(strings.TrimPrefix(lines[index], key+"=")); got != documented {
+		t.Errorf("%s = %q in .env.example, want %q", key, got, documented)
+	}
+
+	comment := commentBlockAbove(lines, index)
+	if !strings.Contains(comment, "default: "+documented) {
+		t.Errorf("%s comment block does not document (default: %s):\n%s", key, documented, comment)
+	}
+
+	parsed, err := time.ParseDuration(documented)
+	if err != nil {
+		t.Fatalf("parse documented default %q: %v", documented, err)
+	}
+	if want := config.Default().Ping.Interval; parsed != want {
+		t.Errorf("documented default %q = %v, want the built-in default %v", documented, parsed, want)
 	}
 }

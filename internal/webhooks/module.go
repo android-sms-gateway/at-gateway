@@ -17,7 +17,10 @@ func Module(withRun bool) fx.Option {
 	}
 
 	if withRun {
-		opts = append(opts, fx.Invoke(fxutil.RegisterRunnable[*Service]()))
+		opts = append(
+			opts,
+			fx.Invoke(fxutil.RegisterRunnable[*Service]()),
+		)
 	}
 
 	return fx.Module("webhooks", opts...)

@@ -109,6 +109,82 @@ func (s *Service) emit(event smsgateway.WebhookEvent, payload any) {
 	}
 }
 
+// EnqueueResult is the enqueue verdict for ONE webhook matched by a tracked
+// emission.
+type EnqueueResult struct {
+	// WebhookID is the id of the matched webhook.
+	WebhookID string
+	// Err is the enqueue failure, nil when the queue item was stored.
+	Err error
+}
+
+// TrackedEmission is the outcome of a tracked emission: the per-webhook
+// verdicts plus the number of matches the caller asked to skip.
+type TrackedEmission struct {
+	// Results carries one verdict per webhook that was actually enqueued, in
+	// registry selection order.
+	Results []EnqueueResult
+	// Suppressed counts the matched webhooks that were NOT enqueued because
+	// the caller had already served them for this message id.
+	Suppressed int
+}
+
+// emitTracked is the reporting variant of emit: the same selection and enqueue
+// loop, but the per-webhook verdict is RETURNED instead of swallowed. The
+// inbound consumer uses it to mark exactly the webhooks whose queue item was
+// stored, so a modem re-notification re-enqueues only the failed ones and
+// never duplicates a delivery for a webhook that already has one queued.
+//
+// served lists webhook ids to skip (the caller's already-served set); an empty
+// or nil set disables suppression. emit() itself is untouched, so every
+// existing fire-and-forget caller is unaffected.
+func (s *Service) emitTracked(event smsgateway.WebhookEvent, payload any, served []string) TrackedEmission {
+	ctx := context.Background()
+	out := TrackedEmission{Results: nil, Suppressed: 0}
+
+	items, err := s.webhooks.SelectByEvent(ctx, event)
+	if err != nil {
+		s.logger.Error("select webhooks for event", zap.Error(err), zap.String("event", event))
+
+		return out
+	}
+
+	skip := make(map[string]struct{}, len(served))
+	for _, id := range served {
+		skip[id] = struct{}{}
+	}
+
+	deviceID := s.devicesSvc.Get().ID
+	now := time.Now().UTC()
+	for _, item := range items {
+		if _, already := skip[item.ID]; already {
+			out.Suppressed++
+
+			continue
+		}
+
+		enqueueErr := s.enqueue(ctx, item, event, payload, deviceID, now)
+		if enqueueErr != nil {
+			s.logger.Error(
+				"enqueue webhook event",
+				zap.Error(enqueueErr),
+				zap.String("event", event),
+				zap.String("webhook_id", item.ID),
+			)
+			out.Results = append(out.Results, EnqueueResult{WebhookID: item.ID, Err: enqueueErr})
+
+			continue
+		}
+
+		if s.metrics != nil {
+			s.metrics.IncEnqueued()
+		}
+		out.Results = append(out.Results, EnqueueResult{WebhookID: item.ID, Err: nil})
+	}
+
+	return out
+}
+
 func (s *Service) enqueue(
 	ctx context.Context,
 	webhook Webhook,

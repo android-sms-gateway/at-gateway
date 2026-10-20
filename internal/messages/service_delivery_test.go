@@ -112,7 +112,7 @@ func newWhiteboxService(t *testing.T) (*Service, *Repository, *bun.DB, *webhooks
 	// still serves cached-SIM reads (empty phone number), which is exactly the
 	// degraded Sender the webhook contract permits. Nil metrics is safe here -
 	// no modem code path runs.
-	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil)
+	modemSvc := modem.NewService(modem.Config{}, zap.NewNop(), nil, webhooksSvc)
 
 	return NewService(
 		Config{},

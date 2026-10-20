@@ -73,6 +73,12 @@ func NewCommands(at *at.AT, metrics *Metrics) *Commands {
 // so an in-flight command always runs to its own per-command timeout. ctx is
 // checked BEFORE the first row and BETWEEN rows, so cancellation aborts the
 // sequence at the next row boundary.
+//
+// Every abort counts ONE at_gateway_modem_init_failures_total under the failing
+// ROW's stage (derived from the row tag), because each of them stops connect()
+// before the modem ever becomes ready: no app:started webhook is emitted and
+// the process goes down. The counter is booked here, where the failing row is
+// known, and connect() adds its own port_open stage.
 func (c *Commands) Init(ctx context.Context) error {
 	commands := []initCommand{
 		{cmd: "", display: "AT", tag: "test"},
@@ -86,12 +92,15 @@ func (c *Commands) Init(ctx context.Context) error {
 	for _, cmd := range commands {
 		select {
 		case <-ctx.Done():
+			c.metrics.IncInitFailure(initFailureStage(cmd.tag))
 			return fmt.Errorf("%s (%s): %w", cmd.tag, cmd.display, ErrModemTimeout)
+
 		default:
 		}
 
 		lines, err := c.exec(cmd)
 		if err != nil {
+			c.metrics.IncInitFailure(initFailureStage(cmd.tag))
 			return err
 		}
 		if cmd.tag == "SIM PIN" {
@@ -99,6 +108,7 @@ func (c *Commands) Init(ctx context.Context) error {
 				if suffix, ok := strings.CutPrefix(line, "+CPIN:"); ok {
 					status := strings.TrimSpace(suffix)
 					if status != "READY" {
+						c.metrics.IncInitFailure(initFailureStage(cmd.tag))
 						return fmt.Errorf("%s: %s: %w", cmd.tag, status, ErrSIMNotReady)
 					}
 				}
@@ -569,10 +579,11 @@ func (c *Commands) sendPDU(p tpdu.TPDU) (int, error) {
 
 	// The +CMGS: indication head can leak into this response as an unknown
 	// info line (v0.4.0 indLoop forwards heads after handlers; with CNMI
-	// active a +CMT head may precede our +CMGS line). Match ONLY lines that
-	// actually START with "+CMGS:" via CutPrefix, so a mid-line "+CMGS:"
-	// substring in a leaked head can never be parsed as the reference.
-	for _, line := range lines {
+	// active a +CMT head may precede our +CMGS line). The shared response
+	// helper drops every '+'-prefixed non-response line first; matching then
+	// uses CutPrefix so a mid-line "+CMGS:" substring in a leaked head can
+	// never be parsed as the reference.
+	for _, line := range dropURCHeads(lines, "+CMGS:") {
 		if suffix, ok := strings.CutPrefix(line, "+CMGS:"); ok {
 			mr, perr := strconv.Atoi(strings.TrimSpace(suffix))
 			if perr != nil {

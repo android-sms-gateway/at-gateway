@@ -22,10 +22,16 @@ type openAPIConfig struct {
 }
 
 type modemConfig struct {
-	Port           string        `koanf:"port"`
-	BaudRate       int           `koanf:"baud_rate"`
-	InitTimeout    time.Duration `koanf:"init_timeout"`
-	CommandTimeout time.Duration `koanf:"command_timeout"`
+	Port           string          `koanf:"port"`
+	BaudRate       int             `koanf:"baud_rate"`
+	InitTimeout    time.Duration   `koanf:"init_timeout"`
+	CommandTimeout time.Duration   `koanf:"command_timeout"`
+	Cmgd           modemCmgdConfig `koanf:"cmgd"`
+}
+
+type modemCmgdConfig struct {
+	RetryAttempts int           `koanf:"retry_attempts"`
+	RetryBackoff  time.Duration `koanf:"retry_backoff"`
 }
 
 type storageConfig struct {
@@ -50,15 +56,24 @@ type databaseConfig struct {
 }
 
 type messagesConfig struct {
-	PollInterval  time.Duration `koanf:"poll_interval"`
-	MaxSegments   int           `koanf:"max_segments"`
-	DefaultRegion string        `koanf:"default_region"`
+	PollInterval  time.Duration         `koanf:"poll_interval"`
+	MaxSegments   int                   `koanf:"max_segments"`
+	DefaultRegion string                `koanf:"default_region"`
+	Inbound       messagesInboundConfig `koanf:"inbound"`
+}
+
+type messagesInboundConfig struct {
+	ReassemblyTimeout time.Duration `koanf:"reassembly_timeout"`
 }
 
 type webhooksConfig struct {
 	RetryCount int                 `koanf:"retry_count"`
 	SigningKey string              `koanf:"signing_key"`
 	Queue      webhooksQueueConfig `koanf:"queue"`
+}
+
+type pingConfig struct {
+	Interval time.Duration `koanf:"interval"`
 }
 
 type webhooksQueueConfig struct {
@@ -80,6 +95,7 @@ type Config struct {
 	Database databaseConfig `koanf:"database"`
 	Messages messagesConfig `koanf:"messages"`
 	Webhooks webhooksConfig `koanf:"webhooks"`
+	Ping     pingConfig     `koanf:"ping"`
 }
 
 // Default returns the built-in configuration: a local-only HTTP server, the
@@ -103,6 +119,10 @@ func Default() Config {
 			BaudRate:       115200,
 			InitTimeout:    30 * time.Second,
 			CommandTimeout: 30 * time.Second,
+			Cmgd: modemCmgdConfig{
+				RetryAttempts: 3,
+				RetryBackoff:  2 * time.Second,
+			},
 		},
 		Storage: storageConfig{
 			Path: "data/storage.json",
@@ -123,6 +143,9 @@ func Default() Config {
 			PollInterval:  time.Second,
 			MaxSegments:   10,
 			DefaultRegion: "RU",
+			Inbound: messagesInboundConfig{
+				ReassemblyTimeout: 5 * time.Minute,
+			},
 		},
 		Webhooks: webhooksConfig{
 			RetryCount: 15,
@@ -136,6 +159,11 @@ func Default() Config {
 				StuckProcessingTimeout: 5 * time.Minute,
 				CleanupRetention:       7 * 24 * time.Hour,
 			},
+		},
+		Ping: pingConfig{
+			// The system:ping heartbeat ships ENABLED: a zero default would make
+			// the event dead on arrival. 0 remains the opt-out.
+			Interval: 60 * time.Second,
 		},
 	}
 }
