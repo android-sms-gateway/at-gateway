@@ -15,6 +15,7 @@ func Module(withRun bool) fx.Option {
 		logger.WithNamedLogger("inbox"),
 
 		fx.Provide(NewMetrics, fx.Private),
+		fx.Provide(NewRepository, fx.Private),
 		fx.Provide(NewService),
 	}
 

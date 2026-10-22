@@ -311,9 +311,13 @@ func TestMigration_CreatesWebhookQueueSchema(t *testing.T) {
 	}
 }
 
-// TestMigration_DownRemovesWebhooksSchema proves the Down of the merged
-// webhooks migration removes the webhooks and queue schema while the messages
+// TestMigration_DownRemovesWebhooksSchema proves the rollback of the webhooks
+// migration removes the webhooks and queue schema while the messages
 // migration stays applied.
+//
+// The rollback targets the messages version instead of a single Down step: a
+// Down pops only the NEWEST migration, and newer migrations may be stacked on
+// top of the webhooks one.
 func TestMigration_DownRemovesWebhooksSchema(t *testing.T) {
 	t.Parallel()
 
@@ -321,8 +325,8 @@ func TestMigration_DownRemovesWebhooksSchema(t *testing.T) {
 	provider := newGooseProvider(t, sqldb)
 	ctx := context.Background()
 
-	if _, err := provider.Down(ctx); err != nil {
-		t.Fatalf("Down: %v", err)
+	if _, err := provider.DownTo(ctx, messagesMigrationVersion); err != nil {
+		t.Fatalf("DownTo(%d): %v", messagesMigrationVersion, err)
 	}
 
 	if got := countSchemaObjects(t, bunDB, "table", "webhook_queue"); got != 0 {
@@ -357,8 +361,10 @@ func TestMigration_DownToMessagesVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownTo(%d): %v", messagesMigrationVersion, err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("DownTo applied %d migrations, want 1", len(results))
+	// The webhooks migration is rolled back together with every migration
+	// stacked on top of it, so the count is not pinned to one.
+	if len(results) < 1 {
+		t.Fatalf("DownTo applied %d migrations, want at least 1", len(results))
 	}
 	if got := countSchemaObjects(t, bunDB, "table", "webhook_queue"); got != 0 {
 		t.Fatalf("webhook_queue table count after DownTo = %d, want 0", got)

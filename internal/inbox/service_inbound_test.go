@@ -48,6 +48,8 @@ type inboundFixture struct {
 	repo     *webhooks.Repository
 	metrics  *inbox.Metrics
 	modem    *modem.Service
+	inbox    *inbox.Repository
+	devices  *devices.Service
 	db       *bun.DB
 }
 
@@ -110,6 +112,8 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 
 	service := inbox.NewService(
 		config,
+		inbox.NewRepository(bunDB),
+		devicesSvc,
 		modemSvc,
 		webhooksSvc,
 		metrics,
@@ -122,6 +126,8 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 		repo:     webhooks.NewRepository(bunDB),
 		metrics:  metrics,
 		modem:    modemSvc,
+		inbox:    inbox.NewRepository(bunDB),
+		devices:  devicesSvc,
 		db:       bunDB,
 	}
 }

@@ -13,6 +13,13 @@ const defaultReassemblyTimeout = 5 * time.Minute
 // sweep had while it rode the messages poll ticker.
 const defaultSweepInterval = time.Second
 
+// inboundStoreTimeout bounds ONE insert into the local inbox store. The
+// SQLite connection is shared by every writer (a single connection), and the
+// inbound pipeline has exactly ONE consumer, so an unbounded insert could
+// stall the consumer loop until the modem hand-off budget sheds the message.
+// The bound turns a stuck write into a counted store failure.
+const inboundStoreTimeout = 2 * time.Second
+
 // Config holds the inbound SMS pipeline settings: the reassembly window and the
 // eviction cadence that drives it.
 //

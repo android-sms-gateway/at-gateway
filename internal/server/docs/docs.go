@@ -178,14 +178,14 @@ const docTemplate = `{
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "Start of date range (ISO 8601)",
+                        "description": "Start of date range (ISO 8601, inclusive)",
                         "name": "from",
                         "in": "query"
                     },
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "End of date range (ISO 8601)",
+                        "description": "End of date range (ISO 8601, exclusive)",
                         "name": "to",
                         "in": "query"
                     },
@@ -232,12 +232,6 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal server error",
-                        "schema": {
-                            "$ref": "#/definitions/smsgateway.ErrorResponse"
-                        }
-                    },
-                    "501": {
-                        "description": "Not implemented",
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }

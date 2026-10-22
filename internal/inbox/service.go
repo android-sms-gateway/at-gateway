@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -16,10 +17,14 @@ import (
 // Service is the inbound SMS pipeline: it consumes the decoded SMS-DELIVER
 // parts the modem module hands off, reassembles concatenated messages, damps
 // modem re-notifications per webhook and emits the assembled messages as
-// inbound webhook events.
+// inbound webhook events. Every assembled message is also PERSISTED in the
+// local inbox store, so the stored rows can be listed and replayed later.
 type Service struct {
 	config Config
 
+	inbox *Repository
+
+	devicesSvc  *devices.Service
 	modemSvc    *modem.Service
 	webhooksSvc *webhooks.Service
 
@@ -43,12 +48,14 @@ type Service struct {
 	logger *zap.Logger
 }
 
-// NewService wires the inbound pipeline with its configuration and the modem,
-// webhook, metrics and logger dependencies. A non-positive ReassemblyTimeout
-// falls back to five minutes and a non-positive SweepInterval to one second;
-// the returned service is driven by Run.
+// NewService wires the inbound pipeline with its configuration and the inbox
+// store, device, modem, webhook, metrics and logger dependencies. A
+// non-positive ReassemblyTimeout falls back to five minutes and a non-positive
+// SweepInterval to one second; the returned service is driven by Run.
 func NewService(
 	config Config,
+	inbox *Repository,
+	devicesSvc *devices.Service,
 	modemSvc *modem.Service,
 	webhooksSvc *webhooks.Service,
 	metrics *Metrics,
@@ -64,6 +71,9 @@ func NewService(
 	return &Service{
 		config: config,
 
+		inbox: inbox,
+
+		devicesSvc:  devicesSvc,
 		modemSvc:    modemSvc,
 		webhooksSvc: webhooksSvc,
 
@@ -95,18 +105,50 @@ func (s *Service) Run(ctx context.Context) error {
 			s.abortInbound()
 			return nil
 		case part := <-s.modemSvc.InboundParts():
-			s.handleInboundPart(part, time.Now().UTC())
+			s.handleInboundPart(ctx, part, time.Now().UTC())
 		case <-ticker.C:
 			s.sweepInbound(time.Now().UTC())
 		}
 	}
 }
 
+// List returns one page of the stored inbound messages plus the total number
+// of rows matching the filter.
+//
+// The listing is ALWAYS owned by the local device: the gateway is
+// single-device, so an explicitly supplied device id is a VALIDATION (a
+// foreign one yields ErrDeviceNotFound), never a row filter.
+func (s *Service) List(ctx context.Context, options ListOptions) ([]IncomingMessage, int, error) {
+	deviceID := s.devicesSvc.Get().ID
+
+	var filter ListFilter
+	if options.Filter != nil {
+		filter = *options.Filter
+	}
+
+	if err := filter.validate(deviceID); err != nil {
+		return nil, 0, err
+	}
+
+	filter.DeviceID = &deviceID
+
+	result, total, err := s.inbox.List(ctx, ListOptions{
+		Filter:     &filter,
+		Pagination: options.Pagination,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return result, total, nil
+}
+
 // handleInboundPart consumes one decoded SMS-DELIVER part: a single-part
 // message is emitted immediately, a concatenated one is buffered until every
 // part arrived. It runs on the Run loop goroutine, so the reassembly state
-// needs no locking.
-func (s *Service) handleInboundPart(part modem.InboundPart, now time.Time) {
+// needs no locking. The context is the Run context: it bounds the store write
+// of a complete message.
+func (s *Service) handleInboundPart(ctx context.Context, part modem.InboundPart, now time.Time) {
 	message, complete := s.assembleInbound(part, now)
 	if !complete {
 		s.logger.Debug("inbound SMS part buffered",
@@ -119,7 +161,7 @@ func (s *Service) handleInboundPart(part modem.InboundPart, now time.Time) {
 		return
 	}
 
-	s.emitInbound(message, now)
+	s.emitInbound(ctx, message, now)
 }
 
 // assembleInbound merges a part into its reassembly group and reports whether
@@ -253,7 +295,11 @@ func (s *Service) abortInbound() {
 // dedupe. Marking happens PER WEBHOOK and only for webhooks whose queue item
 // was actually stored, so a failed enqueue is always retried and a served
 // webhook never receives a duplicate.
-func (s *Service) emitInbound(message inboundMessage, now time.Time) {
+//
+// The message is PERSISTED BEFORE the emission: the stored row is the durable
+// record, the emission is the notification. A persist failure never aborts the
+// emission - it is counted and logged instead.
+func (s *Service) emitInbound(ctx context.Context, message inboundMessage, now time.Time) {
 	messageID := inboundMessageID(message)
 	served := s.inboundDedup.served(messageID, now)
 
@@ -266,11 +312,26 @@ func (s *Service) emitInbound(message inboundMessage, now time.Time) {
 		receivedAt = now
 	}
 
+	content := inboundContent(message)
+	recipient := lo.EmptyableToPtr(s.modemSvc.SIM().PhoneNumber)
+	simNumber := lo.ToPtr(inboundSIMNumber)
+
+	s.persistInbound(ctx, IncomingMessage{
+		ID:         messageID,
+		DeviceID:   s.devicesSvc.Get().ID,
+		Type:       inboundMessageType(message),
+		Sender:     message.sender,
+		Recipient:  recipient,
+		SimNumber:  simNumber,
+		Content:    content,
+		ReceivedAt: receivedAt,
+	})
+
 	event := webhooks.InboundEvent{
 		MessageID: messageID,
 		Sender:    message.sender,
-		Recipient: lo.EmptyableToPtr(s.modemSvc.SIM().PhoneNumber),
-		SimNumber: lo.ToPtr(inboundSIMNumber),
+		Recipient: recipient,
+		SimNumber: simNumber,
 		Message:   "",
 		Data:      "",
 		At:        receivedAt,
@@ -282,11 +343,11 @@ func (s *Service) emitInbound(message inboundMessage, now time.Time) {
 	)
 	if message.ported {
 		eventName = smsgateway.WebhookEventSmsDataReceived
-		event.Data = base64.StdEncoding.EncodeToString([]byte(message.content))
+		event.Data = content
 		out = s.webhooksSvc.EmitSmsDataReceived(event, served)
 	} else {
 		eventName = smsgateway.WebhookEventSmsReceived
-		event.Message = message.content
+		event.Message = content
 		out = s.webhooksSvc.EmitSmsReceived(event, served)
 	}
 	s.metrics.IncInboundEvent(eventName)
@@ -325,4 +386,58 @@ func (s *Service) countPostRestartEmission(emitted, suppressed int, now time.Tim
 	if emitted > 0 && suppressed == 0 {
 		s.metrics.IncDedupeSkippedPostRestart()
 	}
+}
+
+// persistInbound stores one assembled message in the local inbox store.
+//
+// The insert is BOUNDED by a short timeout derived from the Run context: the
+// SQLite connection is shared by every writer and the inbound pipeline has
+// exactly ONE consumer, so an unbounded insert could stall the consumer until
+// the modem hand-off budget sheds the message.
+//
+// A failed or timed-out insert is counted and logged, and NEVER aborts the
+// webhook emission: the emission is the notification, the row is the durable
+// record. The insert runs on the consumer goroutine - never while the modem
+// command lock is held - and the modem path is never blocked on the store,
+// because the part was already handed off.
+func (s *Service) persistInbound(ctx context.Context, message IncomingMessage) {
+	storeCtx, cancel := context.WithTimeout(ctx, inboundStoreTimeout)
+	defer cancel()
+
+	if err := s.inbox.Insert(storeCtx, message); err != nil {
+		s.metrics.IncStoreFailed()
+		// The sender and the content are user PII: they are never logged
+		// above Debug, so only the message identity is reported here.
+		s.logger.Info("inbound message not stored",
+			zap.String("message_id", message.ID),
+			zap.Error(err),
+		)
+
+		return
+	}
+
+	s.metrics.IncStored()
+}
+
+// inboundContent returns the WIRE-READY body of an assembled message: the
+// assembled text for an SMS, the base64 NO_WRAP encoding of the raw octets for
+// a DATA_SMS. The data encoding is byte-identical to the data field of the
+// sms:data-received webhook payload, so a stored row replays without any
+// re-encoding.
+func inboundContent(message inboundMessage) string {
+	if message.ported {
+		return base64.StdEncoding.EncodeToString([]byte(message.content))
+	}
+
+	return message.content
+}
+
+// inboundMessageType returns the stored type of an assembled message. Only SMS
+// and DATA_SMS exist at this gateway: MMS is never received over AT.
+func inboundMessageType(message inboundMessage) smsgateway.IncomingMessageType {
+	if message.ported {
+		return smsgateway.IncomingMessageTypeDataSMS
+	}
+
+	return smsgateway.IncomingMessageTypeSMS
 }

@@ -16,8 +16,9 @@ import (
 
 // newInboundDB starts the full persistence graph (sqlfx + goosefx + bunfx +
 // db.Module) against an in-memory SQLite database and returns the connection
-// the inbound fixture builds the webhook registry on. inbox has NO repository
-// of its own: only the webhook queue behind it persists.
+// the inbound fixture builds the webhook registry on. The SAME connection
+// carries the inbox table: the inbox package has its own Repository, so the
+// inbound fixture persists its messages through it.
 func newInboundDB(t *testing.T) *bun.DB {
 	t.Helper()
 

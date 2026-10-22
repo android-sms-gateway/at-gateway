@@ -1,6 +1,7 @@
 package inbox
 
 import (
+	"context"
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
@@ -8,6 +9,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// InboundMessage aliases the unexported assembled-message type so the external
+// test package can pin the message identity.
+type InboundMessage = inboundMessage
+
+// InboundKey aliases the unexported reassembly key for the same reason.
+type InboundKey = inboundKey
 
 // NewTestMetrics exposes an isolated metrics constructor to external tests.
 func NewTestMetrics(registerer prometheus.Registerer) *Metrics {
@@ -45,39 +53,20 @@ func NewTestMetrics(registerer prometheus.Registerer) *Metrics {
 				Help: "Test counter",
 			},
 		),
+		inboxStoredTotal: factory.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_stored_total",
+				Help: "Test counter",
+			},
+		),
+		inboxStoreErrorsTotal: factory.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_store_errors_total",
+				Help: "Test counter",
+			},
+		),
 	}
 }
-
-// InboundCounterValue reads a named inbound counter of the inbox metrics for
-// external tests. An empty name reads the {event="sms:received"} slice of the
-// inbound-event counter.
-func InboundCounterValue(m *Metrics, name string) float64 {
-	if name == "at_gateway_inbox_events_total" {
-		return testutil.ToFloat64(m.inboundEventsTotal.WithLabelValues("sms:received"))
-	}
-
-	switch name {
-	case "at_gateway_inbox_events_total:data":
-		return testutil.ToFloat64(m.inboundEventsTotal.WithLabelValues("sms:data-received"))
-	case "at_gateway_inbox_reassembly_timeouts_total":
-		return testutil.ToFloat64(m.inboundReassemblyTimeoutsTotal)
-	case "at_gateway_inbox_reassembly_aborted_total":
-		return testutil.ToFloat64(m.inboundReassemblyAbortedTotal)
-	case "at_gateway_inbox_dedupe_blocked_total":
-		return testutil.ToFloat64(m.inboundDedupeBlockedTotal)
-	case "at_gateway_inbox_dedupe_skipped_post_restart_total":
-		return testutil.ToFloat64(m.inboundDedupePostRestartTotal)
-	default:
-		panic("unknown inbox counter: " + name)
-	}
-}
-
-// InboundMessage aliases the unexported assembled-message type so the external
-// test package can pin the message identity.
-type InboundMessage = inboundMessage
-
-// InboundKey aliases the unexported reassembly key for the same reason.
-type InboundKey = inboundKey
 
 // NewInboundKey builds a reassembly-key fixture: the fields are unexported, so
 // the external test package cannot spell the literal itself.
@@ -107,16 +96,11 @@ func NewInboundMessage(
 	}
 }
 
-// InboundMessageID exposes the content-deterministic message identity.
-func InboundMessageID(m InboundMessage) string {
-	return inboundMessageID(m)
-}
-
 // HandleInboundPartForTest feeds one decoded part through the consumer, with an
 // explicit clock so the dedupe window and the reassembly eviction are
 // deterministic.
 func (s *Service) HandleInboundPartForTest(part modem.InboundPart, now time.Time) {
-	s.handleInboundPart(part, now)
+	s.handleInboundPart(context.Background(), part, now)
 }
 
 // SweepInboundForTest runs the reassembly/dedupe eviction sweep.
@@ -180,4 +164,44 @@ func (d *inboundDeduper) TTLForTest() time.Duration {
 // LenForTest reports how many message ids the dedupe remembers.
 func (d *inboundDeduper) LenForTest() int {
 	return len(d.entries)
+}
+
+// InboundCounterValue reads a named inbound counter of the inbox metrics for
+// external tests. An empty name reads the {event="sms:received"} slice of the
+// inbound-event counter.
+func InboundCounterValue(m *Metrics, name string) float64 {
+	if name == "at_gateway_inbox_events_total" {
+		return testutil.ToFloat64(m.inboundEventsTotal.WithLabelValues("sms:received"))
+	}
+
+	switch name {
+	case "at_gateway_inbox_events_total:data":
+		return testutil.ToFloat64(m.inboundEventsTotal.WithLabelValues("sms:data-received"))
+	case "at_gateway_inbox_reassembly_timeouts_total":
+		return testutil.ToFloat64(m.inboundReassemblyTimeoutsTotal)
+	case "at_gateway_inbox_reassembly_aborted_total":
+		return testutil.ToFloat64(m.inboundReassemblyAbortedTotal)
+	case "at_gateway_inbox_dedupe_blocked_total":
+		return testutil.ToFloat64(m.inboundDedupeBlockedTotal)
+	case "at_gateway_inbox_dedupe_skipped_post_restart_total":
+		return testutil.ToFloat64(m.inboundDedupePostRestartTotal)
+	case "at_gateway_inbox_stored_total":
+		return testutil.ToFloat64(m.inboxStoredTotal)
+	case "at_gateway_inbox_store_errors_total":
+		return testutil.ToFloat64(m.inboxStoreErrorsTotal)
+	default:
+		panic("unknown inbox counter: " + name)
+	}
+}
+
+// InboundStoreTimeout exposes the bound of ONE store write, so an external
+// test can hold the store busy for longer than the bound without hard-coding
+// the constant.
+func InboundStoreTimeout() time.Duration {
+	return inboundStoreTimeout
+}
+
+// InboundMessageID exposes the content-deterministic message identity.
+func InboundMessageID(m InboundMessage) string {
+	return inboundMessageID(m)
 }
