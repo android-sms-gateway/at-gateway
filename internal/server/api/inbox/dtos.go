@@ -28,3 +28,20 @@ func incomingMessageToDTO(message inbox.IncomingMessage) smsgateway.IncomingMess
 		CreatedAt:      message.ReceivedAt,
 	}
 }
+
+// refreshRequestFromDTO maps the wire refresh request onto the domain refresh
+// request. The mapping is PURE: the delivery mode comes from the DTO's own
+// precedence (explicit webhookDelivery > deprecated triggerWebhooks >
+// Disabled), the requested message types pass through VERBATIM - they are
+// matched EXACTLY against the stored type, and the EMPTY default ([SMS])
+// belongs to the service (owner decision D-10) - and no validation runs here
+// (the DTO tags and the service own it).
+func refreshRequestFromDTO(req *smsgateway.InboxRefreshRequest) inbox.RefreshRequest {
+	return inbox.RefreshRequest{
+		DeviceID: req.DeviceID,
+		Since:    req.Since,
+		Until:    req.Until,
+		Types:    req.MessageTypes,
+		Delivery: req.ResolveWebhookDelivery(),
+	}
+}

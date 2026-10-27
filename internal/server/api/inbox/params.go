@@ -37,6 +37,9 @@ type listInboxParams struct {
 
 // toListOptions maps the parsed query parameters onto the domain list
 // options. The default page size is applied here, so every caller gets it.
+// The type filter follows the `type` parameter: no ?type parameter -> nil ->
+// the type filter is DISABLED (every row matches), a named type -> that type
+// only.
 func (p listInboxParams) toListOptions() inbox.ListOptions {
 	limit := defaultListLimit
 	if p.Limit != nil {
@@ -48,13 +51,19 @@ func (p listInboxParams) toListOptions() inbox.ListOptions {
 		offset = *p.Offset
 	}
 
+	var types []smsgateway.IncomingMessageType // nil -> the type filter is DISABLED (every row matches)
+	if p.Type != nil {
+		types = []smsgateway.IncomingMessageType{*p.Type}
+	}
+
 	return inbox.ListOptions{
 		Filter: &inbox.ListFilter{
 			DeviceID: p.DeviceID,
-			Type:     p.Type,
+			Types:    types,
 			From:     p.From,
 			To:       p.To,
 		},
+		Order: nil,
 		Pagination: &inbox.ListPagination{
 			Limit:  &limit,
 			Offset: &offset,

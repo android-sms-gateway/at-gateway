@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/db"
+	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/go-core-fx/bunfx"
 	"github.com/go-core-fx/goosefx"
 	"github.com/go-core-fx/sqlfx"
@@ -13,6 +14,20 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
+
+// allTypes is the full four-value incoming-message enum. An empty or nil
+// ListFilter.Types DISABLES the type filter (owner decision D-10), so a test
+// that wants the type filter EXPLICITLY ON while still matching every stored
+// type names every type through this ONE helper instead of inlining the
+// literal.
+func allTypes() []smsgateway.IncomingMessageType {
+	return []smsgateway.IncomingMessageType{
+		smsgateway.IncomingMessageTypeSMS,
+		smsgateway.IncomingMessageTypeDataSMS,
+		smsgateway.IncomingMessageTypeMMS,
+		smsgateway.IncomingMessageTypeMmsDownloaded,
+	}
+}
 
 // newInboundDB starts the full persistence graph (sqlfx + goosefx + bunfx +
 // db.Module) against an in-memory SQLite database and returns the connection

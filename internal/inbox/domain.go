@@ -5,7 +5,18 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/client-go/smsgateway"
+	"github.com/samber/lo"
 	"github.com/uptrace/bun"
+)
+
+// SortOrder is the received_at ordering applied by [Repository.List]; the
+// zero or unset state behaves as DESCENDING - the newest-first listing order -
+// and SortAsc is the chronological replay order.
+type SortOrder string
+
+const (
+	SortAsc  SortOrder = "received_at"
+	SortDesc SortOrder = "-received_at"
 )
 
 // IncomingMessage is one persisted inbound message: the durable record of what
@@ -40,6 +51,9 @@ type IncomingMessage struct {
 type ListOptions struct {
 	// Filter narrows the rows; the device id is always set by the service.
 	Filter *ListFilter
+	// Order selects the received_at ordering; a nil Order is the newest-first
+	// listing order.
+	Order *ListOrder
 	// Pagination bounds the returned page.
 	Pagination *ListPagination
 }
@@ -52,6 +66,7 @@ func (o *ListOptions) apply(q *bun.SelectQuery) *bun.SelectQuery {
 	if o.Filter != nil {
 		q = o.Filter.apply(q)
 	}
+	q = o.Order.apply(q)
 	if o.Pagination != nil {
 		q = o.Pagination.apply(q)
 	}
@@ -64,8 +79,11 @@ func (o *ListOptions) apply(q *bun.SelectQuery) *bun.SelectQuery {
 type ListFilter struct {
 	// DeviceID restricts the rows to one device.
 	DeviceID *string
-	// Type restricts the rows to one message type.
-	Type *smsgateway.IncomingMessageType
+	// Types restricts the rows to the listed message types. Every value is
+	// matched EXACTLY against the stored type - no grouping, no expansion. An
+	// EMPTY or NIL list DISABLES the type filter (no type predicate at all,
+	// every row matches), so a caller that means "every type" passes nothing.
+	Types []smsgateway.IncomingMessageType
 	// From is the inclusive lower bound of the received_at range.
 	From *time.Time
 	// To is the exclusive upper bound of the received_at range.
@@ -80,9 +98,14 @@ func (f *ListFilter) apply(q *bun.SelectQuery) *bun.SelectQuery {
 	if f.DeviceID != nil {
 		q = q.Where("device_id = ?", *f.DeviceID)
 	}
-	if f.Type != nil {
-		q = q.Where("type = ?", string(*f.Type))
+
+	if len(f.Types) > 0 {
+		typeNames := lo.Map(f.Types, func(messageType smsgateway.IncomingMessageType, _ int) string {
+			return string(messageType)
+		})
+		q = q.Where("type IN (?)", bun.List(typeNames))
 	}
+
 	if f.From != nil {
 		q = q.Where("received_at >= ?", f.From)
 	}
@@ -123,6 +146,23 @@ func (f *ListFilter) validate(localDeviceID string) error {
 	return nil
 }
 
+// ListOrder is the received_at ordering of a listing: SortDesc - and the zero
+// or unset state - is the newest-first listing order, SortAsc the
+// chronological replay order.
+type ListOrder struct {
+	Order *SortOrder
+}
+
+func (o *ListOrder) apply(q *bun.SelectQuery) *bun.SelectQuery {
+	if o == nil || o.Order == nil || *o.Order == SortDesc {
+		q = q.OrderExpr(orderIncomingDescending)
+	} else {
+		q = q.OrderExpr(orderIncomingAscending)
+	}
+
+	return q
+}
+
 // ListPagination bounds the returned page.
 type ListPagination struct {
 	// Limit is the maximum number of rows; nil means no limit.
@@ -144,4 +184,53 @@ func (p *ListPagination) apply(q *bun.SelectQuery) *bun.SelectQuery {
 	}
 
 	return q
+}
+
+// RefreshRequest is one inbox refresh: the window of stored messages to replay
+// as inbound webhook events and how those events are delivered.
+type RefreshRequest struct {
+	// DeviceID optionally names the device the refresh belongs to. It is a
+	// VALIDATION against the local device, never a row filter.
+	DeviceID *string
+	// Since is the INCLUSIVE lower bound of the received_at window.
+	Since time.Time
+	// Until is the EXCLUSIVE upper bound of the received_at window.
+	Until time.Time
+	// Types are the requested message types, matched EXACTLY against the
+	// stored type - no grouping, no expansion. An empty list means the
+	// default ([SMS]).
+	Types []smsgateway.IncomingMessageType
+	// Delivery selects the webhook delivery mode of the replay: Disabled,
+	// Individual or Batch. Batch is rejected - no batch emitters exist here.
+	Delivery smsgateway.WebhookDelivery
+}
+
+// validate rejects a refresh whose own fields cannot be satisfied by the local
+// device.
+//
+// The gateway is SINGLE-DEVICE, so an explicitly named device id is a
+// VALIDATION and never a row filter: a foreign id is rejected with
+// [ErrDeviceNotFound]. The window is HALF-OPEN (Since inclusive, Until
+// exclusive), so an inverted window is rejected with [ErrInvalidDateRange].
+//
+// The device rule is checked FIRST, so a request that violates both reports
+// the device error. A nil request has no fields to validate and is accepted.
+func (r *RefreshRequest) validate(localDeviceID string) error {
+	if r == nil {
+		return nil
+	}
+
+	if r.DeviceID != nil && *r.DeviceID != localDeviceID {
+		return fmt.Errorf("%w: %q", ErrDeviceNotFound, *r.DeviceID)
+	}
+	if r.Since.After(r.Until) {
+		return fmt.Errorf(
+			"%w: from %s is after to %s",
+			ErrInvalidDateRange,
+			r.Since.UTC().Format(time.RFC3339),
+			r.Until.UTC().Format(time.RFC3339),
+		)
+	}
+
+	return nil
 }

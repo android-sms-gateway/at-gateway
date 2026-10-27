@@ -104,8 +104,15 @@ func (h *Handler) list(c *fiber.Ctx) error {
 //	@Failure		403		{object}	smsgateway.ErrorResponse	"Forbidden"
 //	@Failure		500		{object}	smsgateway.ErrorResponse	"Internal server error"
 //	@Router			/inbox/refresh [post]
-func (h *Handler) refresh(_ *fiber.Ctx, _ *smsgateway.InboxRefreshRequest) error {
-	return fiber.ErrNotImplemented
+func (h *Handler) refresh(c *fiber.Ctx, req *smsgateway.InboxRefreshRequest) error {
+	if err := h.inboxSvc.Refresh(c.Context(), refreshRequestFromDTO(req)); err != nil {
+		return fmt.Errorf("refresh inbox messages: %w", err)
+	}
+
+	// Exact server parity (server .../inbox/3rdparty.go:144): SendStatus writes
+	// the status TEXT as the body when no body follows - 202 with the plain
+	// text "Accepted", not an empty body and not JSON.
+	return c.SendStatus(fiber.StatusAccepted)
 }
 
 // errorHandler maps the inbox sentinels onto their HTTP status codes.
@@ -119,6 +126,8 @@ func (h *Handler) errorHandler(c *fiber.Ctx) error {
 	case errors.Is(err, inbox.ErrDeviceNotFound):
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	case errors.Is(err, inbox.ErrInvalidDateRange):
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	case errors.Is(err, inbox.ErrBatchNotSupported):
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
 

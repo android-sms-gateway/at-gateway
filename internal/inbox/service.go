@@ -134,6 +134,7 @@ func (s *Service) List(ctx context.Context, options ListOptions) ([]IncomingMess
 
 	result, total, err := s.inbox.List(ctx, ListOptions{
 		Filter:     &filter,
+		Order:      options.Order,
 		Pagination: options.Pagination,
 	})
 	if err != nil {
@@ -141,6 +142,109 @@ func (s *Service) List(ctx context.Context, options ListOptions) ([]IncomingMess
 	}
 
 	return result, total, nil
+}
+
+// Refresh replays the stored inbound messages of the [Since, Until) window as
+// inbound webhook events. The replay goes through the shared [Repository.List]
+// path: it is SCOPED TO THE LOCAL DEVICE exactly like [Service.List] (an
+// omitted deviceId and the local deviceId both replay only local rows, a
+// foreign deviceId is rejected by validate), is ordered SortAsc -
+// CHRONOLOGICAL, oldest first, deliberately the opposite of the listing order
+// - and carries NO pagination: no LIMIT, no OFFSET, no row cap (owner
+// decision D-3).
+//
+// The replay is SYNCHRONOUS and UNBOUNDED (owner decision D-3): there is NO
+// row cap, EVERY matching row is re-emitted with served=nil, so the in-memory
+// dedupe is deliberately BYPASSED - an explicit refresh is an operator action,
+// never a modem re-notification - and Refresh does not mark the dedupe either.
+// Delivery is resolved first: Disabled replays nothing, Batch is rejected with
+// [ErrBatchNotSupported] (no batch emitters exist at this gateway), Individual
+// emits exactly one event per stored row. The requested message types are
+// matched EXACTLY against the stored type (owner decision D-10): there is NO
+// grouping and NO expansion of any kind, values are used VERBATIM with NO
+// de-duplication, and an empty/omitted request list defaults to [SMS] HERE,
+// INSIDE Refresh - applied inline at the point the filter is built - so the
+// repository NEVER receives an empty list from a refresh. DATA_SMS and
+// MMS_DOWNLOADED cannot be named over HTTP - the pinned shared DTO validates
+// MessageTypes with oneof=SMS MMS - so those stored rows are LISTABLE but NOT
+// REPLAYABLE over HTTP; only an in-process caller can name them.
+//
+// ACCEPTED RESIDUAL RISK (D-3, owner-ratified and OBSERVABLE): the unbounded
+// replay competes with the inbound persist INSERT for the single SQLite
+// connection (MaxOpenConns=1), and its emissions run on a background context
+// (webhooks emitTracked never inherits the request context), so a client
+// disconnect does NOT cancel it. Sustained starvation of this module's
+// single-consumer Run loop can shed inbound SMS once the modem hand-off budget
+// is spent and the store entry is deleted. The canary is
+// at_gateway_inbox_store_errors_total; the permanent-loss signal is
+// at_gateway_modem_inbound_parts_dropped_total{reason="channel_full_exhausted"}.
+// NO row cap is added.
+func (s *Service) Refresh(ctx context.Context, request RefreshRequest) error {
+	local := s.devicesSvc.Get().ID
+	if err := request.validate(local); err != nil {
+		return err
+	}
+
+	switch request.Delivery {
+	case smsgateway.WebhookDeliveryDisabled:
+		return nil
+	case smsgateway.WebhookDeliveryBatch:
+		return ErrBatchNotSupported
+	case smsgateway.WebhookDeliveryIndividual:
+		// One inbound event per stored row - the replay below.
+	default:
+		// Unreachable over the wire (the DTO validator pins the three known
+		// modes); fail closed so an unknown in-process value never emits.
+		return nil
+	}
+
+	types := request.Types
+	if len(types) == 0 {
+		types = []smsgateway.IncomingMessageType{smsgateway.IncomingMessageTypeSMS}
+	}
+
+	since := request.Since
+	until := request.Until
+	rows, _, err := s.inbox.List(ctx, ListOptions{
+		Filter: &ListFilter{
+			DeviceID: &local,
+			Types:    types,
+			From:     &since,
+			To:       &until,
+		},
+		Order:      &ListOrder{Order: lo.ToPtr(SortAsc)},
+		Pagination: nil,
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		event := webhooks.InboundEvent{
+			MessageID: row.ID,
+			Sender:    row.Sender,
+			Recipient: row.Recipient,
+			SimNumber: row.SimNumber,
+			Message:   "",
+			Data:      "",
+			At:        row.ReceivedAt,
+		}
+
+		// served must stay nil: an explicit refresh re-emits deliberately and
+		// bypasses the in-memory dedupe (the dedupe only damps modem
+		// re-notifications and is never marked by a replay).
+		if row.Type == smsgateway.IncomingMessageTypeDataSMS {
+			event.Data = row.Content
+			s.webhooksSvc.EmitSmsDataReceived(event, nil)
+		} else {
+			// Only SMS and DATA_SMS are ever stored at this gateway, so every
+			// other row replays as the text event.
+			event.Message = row.Content
+			s.webhooksSvc.EmitSmsReceived(event, nil)
+		}
+	}
+
+	return nil
 }
 
 // handleInboundPart consumes one decoded SMS-DELIVER part: a single-part

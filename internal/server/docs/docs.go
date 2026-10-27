@@ -241,7 +241,7 @@ const docTemplate = `{
         },
         "/inbox/refresh": {
             "post": {
-                "description": "Refreshes inbox messages. Webhooks are triggered when triggerWebhooks is true.",
+                "description": "Replays the stored inbox messages of the [since, until) window as inbound webhooks.\nSYNCHRONOUS and NOT bounded by a row count (no row cap): the duration is proportional to the requested window,\nnot to any fixed page size, and the emissions run on a background context (` + "`" + `emitTracked` + "`" + ` uses ` + "`" + `context.Background()` + "`" + `),\nso a client disconnect does NOT cancel the replay.\n` + "`" + `messageTypes` + "`" + ` values are matched EXACTLY against the stored type: omitted/empty defaults to SMS - no grouping, no expansion.\n` + "`" + `DATA_SMS` + "`" + ` and ` + "`" + `MMS_DOWNLOADED` + "`" + ` cannot be named in this request (the shared DTO validates ` + "`" + `oneof=SMS MMS` + "`" + `),\nso those stored rows are NOT replayed over HTTP - only an in-process caller can name them.\nWhen neither ` + "`" + `webhookDelivery` + "`" + ` nor ` + "`" + `triggerWebhooks` + "`" + ` is present, delivery defaults to Disabled: nothing is emitted.\nLIST and REFRESH both match exactly, but LIST accepts all four type values while REFRESH accepts only SMS and MMS (a difference dictated by the shared DTOs).\n` + "`" + `webhookDelivery` + "`" + ` Batch is rejected with 400 (this gateway has no batch emitters); Disabled replays nothing.\nSuccess is 202 with body \"Accepted\" (text/plain, server parity).",
                 "consumes": [
                     "application/json"
                 ],

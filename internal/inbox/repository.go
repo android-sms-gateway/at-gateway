@@ -15,6 +15,10 @@ const (
 	// message first, the rowid breaks the tie between messages received
 	// within the same stamp.
 	orderIncomingDescending = "received_at DESC, id DESC"
+	// orderIncomingAscending is the replay order: the oldest received message
+	// first, the rowid breaks the tie - deliberately the OPPOSITE of the
+	// listing order, so a refresh window replays chronologically.
+	orderIncomingAscending = "received_at ASC, id ASC"
 )
 
 // Repository is the bun-backed data access layer for the persisted inbound
@@ -54,9 +58,7 @@ func (r *Repository) Insert(ctx context.Context, message IncomingMessage) error 
 // is the count of ALL matching rows and not the count of the page.
 func (r *Repository) List(ctx context.Context, options ListOptions) ([]IncomingMessage, int, error) {
 	models := make([]inboxModel, 0)
-	query := r.db.NewSelect().
-		Model(&models).
-		OrderExpr(orderIncomingDescending)
+	query := r.db.NewSelect().Model(&models)
 	query = options.apply(query)
 
 	total, scanErr := query.ScanAndCount(ctx)
