@@ -50,17 +50,17 @@ func (h *Handler) Register(router fiber.Router) {
 
 // Get incoming messages.
 //
-//	@Summary		Get incoming messages
-//	@Description	Retrieves incoming messages with filtering and pagination.
+//	@Summary		Get inbox messages
+//	@Description	Retrieves inbox messages with filtering and pagination.
 //	@Tags			User, Inbox
 //	@Produce		json
-//	@Param			type		query		string						false	"Filter incoming messages by type"			Enums(SMS,DATA_SMS,MMS,MMS_DOWNLOADED)
-//	@Param			limit		query		int							false	"Maximum number of messages to return"		minimum(1)	maximum(500)	default(50)
-//	@Param			offset		query		int							false	"Number of messages to skip"				minimum(0)	default(0)
-//	@Param			from		query		string						false	"Start of date range (ISO 8601, inclusive)"	Format(date-time)
-//	@Param			to			query		string						false	"End of date range (ISO 8601, exclusive)"	Format(date-time)
+//	@Param			type		query		string						false	"Filter inbox messages by type"			Enums(SMS,DATA_SMS,MMS,MMS_DOWNLOADED)
+//	@Param			limit		query		int							false	"Maximum number of messages to return"	minimum(1)	maximum(500)	default(50)
+//	@Param			offset		query		int							false	"Number of messages to skip"			minimum(0)	default(0)
+//	@Param			from		query		string						false	"Start of date range (ISO 8601)"		Format(date-time)
+//	@Param			to			query		string						false	"End of date range (ISO 8601)"			Format(date-time)
 //	@Param			deviceId	query		string						false	"Device ID"
-//	@Success		200			{array}		smsgateway.IncomingMessage	"A list of incoming messages"
+//	@Success		200			{array}		smsgateway.IncomingMessage	"A list of inbox messages"
 //	@Header			200			{integer}	X-Total-Count				"Total number of items available"
 //	@Failure		400			{object}	smsgateway.ErrorResponse	"Invalid request"
 //	@Failure		401			{object}	smsgateway.ErrorResponse	"Unauthorized"
@@ -93,7 +93,7 @@ func (h *Handler) list(c *fiber.Ctx) error {
 // Request inbox refresh.
 //
 //	@Summary		Request inbox messages refresh
-//	@Description	Refreshes inbox messages. Webhooks are triggered when triggerWebhooks is true.
+//	@Description	Refreshes inbox messages. Webhook triggering depends on the `webhookDelivery` parameter.
 //	@Tags			User, Inbox
 //	@Accept			json
 //	@Produce		json

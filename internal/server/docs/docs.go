@@ -136,7 +136,7 @@ const docTemplate = `{
         },
         "/inbox": {
             "get": {
-                "description": "Retrieves incoming messages with filtering and pagination.",
+                "description": "Retrieves inbox messages with filtering and pagination.",
                 "produces": [
                     "application/json"
                 ],
@@ -144,7 +144,7 @@ const docTemplate = `{
                     "User",
                     "Inbox"
                 ],
-                "summary": "Get incoming messages",
+                "summary": "Get inbox messages",
                 "parameters": [
                     {
                         "enum": [
@@ -154,7 +154,7 @@ const docTemplate = `{
                             "MMS_DOWNLOADED"
                         ],
                         "type": "string",
-                        "description": "Filter incoming messages by type",
+                        "description": "Filter inbox messages by type",
                         "name": "type",
                         "in": "query"
                     },
@@ -178,14 +178,14 @@ const docTemplate = `{
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "Start of date range (ISO 8601, inclusive)",
+                        "description": "Start of date range (ISO 8601)",
                         "name": "from",
                         "in": "query"
                     },
                     {
                         "type": "string",
                         "format": "date-time",
-                        "description": "End of date range (ISO 8601, exclusive)",
+                        "description": "End of date range (ISO 8601)",
                         "name": "to",
                         "in": "query"
                     },
@@ -198,7 +198,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "A list of incoming messages",
+                        "description": "A list of inbox messages",
                         "schema": {
                             "type": "array",
                             "items": {
@@ -241,7 +241,7 @@ const docTemplate = `{
         },
         "/inbox/refresh": {
             "post": {
-                "description": "Replays the stored inbox messages of the [since, until) window as inbound webhooks.\nSYNCHRONOUS and NOT bounded by a row count (no row cap): the duration is proportional to the requested window,\nnot to any fixed page size, and the emissions run on a background context (` + "`" + `emitTracked` + "`" + ` uses ` + "`" + `context.Background()` + "`" + `),\nso a client disconnect does NOT cancel the replay.\n` + "`" + `messageTypes` + "`" + ` values are matched EXACTLY against the stored type: omitted/empty defaults to SMS - no grouping, no expansion.\n` + "`" + `DATA_SMS` + "`" + ` and ` + "`" + `MMS_DOWNLOADED` + "`" + ` cannot be named in this request (the shared DTO validates ` + "`" + `oneof=SMS MMS` + "`" + `),\nso those stored rows are NOT replayed over HTTP - only an in-process caller can name them.\nWhen neither ` + "`" + `webhookDelivery` + "`" + ` nor ` + "`" + `triggerWebhooks` + "`" + ` is present, delivery defaults to Disabled: nothing is emitted.\nLIST and REFRESH both match exactly, but LIST accepts all four type values while REFRESH accepts only SMS and MMS (a difference dictated by the shared DTOs).\n` + "`" + `webhookDelivery` + "`" + ` Batch is rejected with 400 (this gateway has no batch emitters); Disabled replays nothing.\nSuccess is 202 with body \"Accepted\" (text/plain, server parity).",
+                "description": "Refreshes inbox messages. Webhook triggering depends on the ` + "`" + `webhookDelivery` + "`" + ` parameter.",
                 "consumes": [
                     "application/json"
                 ],
