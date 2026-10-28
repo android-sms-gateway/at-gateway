@@ -188,7 +188,7 @@ func (f handlerFixture) seed(
 ) {
 	t.Helper()
 
-	if err := f.repo.Insert(context.Background(), inbox.IncomingMessage{
+	if _, err := f.repo.Insert(context.Background(), inbox.IncomingMessage{
 		ID:         id,
 		DeviceID:   f.deviceID,
 		Type:       messageType,

@@ -20,6 +20,7 @@ type Metrics struct {
 	inboundDedupeBlockedTotal      prometheus.Counter
 	inboundDedupePostRestartTotal  prometheus.Counter
 	inboxStoredTotal               prometheus.Counter
+	inboxStoreConflictsTotal       prometheus.Counter
 	inboxStoreErrorsTotal          prometheus.Counter
 }
 
@@ -64,6 +65,14 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{
 				Name: "at_gateway_inbox_stored_total",
 				Help: "Total number of inbound messages persisted in the local inbox store",
+			},
+		),
+		inboxStoreConflictsTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_store_conflicts_total",
+				Help: "Total number of inbound inbox insert attempts that hit the (device_id, message_id) " +
+					"unique conflict and were ignored because the row already existed: the accepted D-1 " +
+					"collapse of byte-identical content, or a modem re-notification of a message already stored",
 			},
 		),
 		inboxStoreErrorsTotal: promauto.NewCounter(
@@ -111,6 +120,15 @@ func (m *Metrics) IncDedupeSkippedPostRestart() {
 // IncStored counts one inbound message persisted in the local inbox store.
 func (m *Metrics) IncStored() {
 	m.inboxStoredTotal.Inc()
+}
+
+// IncStoreConflict counts one inbox insert attempt that hit the
+// (device_id, message_id) unique conflict and was ignored because the row
+// already existed - the accepted D-1 collapse of byte-identical content, or a
+// modem re-notification of a message already stored. It is NOT a store
+// failure: the row is present, only the write was skipped.
+func (m *Metrics) IncStoreConflict() {
+	m.inboxStoreConflictsTotal.Inc()
 }
 
 // IncStoreFailed counts one inbound message that could NOT be persisted in the

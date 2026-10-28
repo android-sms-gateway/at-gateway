@@ -492,7 +492,9 @@ func (s *Service) countPostRestartEmission(emitted, suppressed int, now time.Tim
 	}
 }
 
-// persistInbound stores one assembled message in the local inbox store.
+// persistInbound stores one assembled message in the local inbox store and
+// records one of THREE outcomes: a row written (stored), a unique conflict
+// because the row already exists (not an error - see below), or a failure.
 //
 // The insert is BOUNDED by a short timeout derived from the Run context: the
 // SQLite connection is shared by every writer and the inbound pipeline has
@@ -501,20 +503,36 @@ func (s *Service) countPostRestartEmission(emitted, suppressed int, now time.Tim
 //
 // A failed or timed-out insert is counted and logged, and NEVER aborts the
 // webhook emission: the emission is the notification, the row is the durable
-// record. The insert runs on the consumer goroutine - never while the modem
-// command lock is held - and the modem path is never blocked on the store,
-// because the part was already handed off.
+// record. A conflict - the row already exists for this (device_id, message_id)
+// pair - is the ACCEPTED D-1 collapse (or a modem re-notification of a message
+// already stored), so it is counted separately: the stored counter stays
+// truthful because an ignored conflict is NOT a stored row. The insert runs on
+// the consumer goroutine - never while the modem command lock is held - and
+// the modem path is never blocked on the store, because the part was already
+// handed off.
 func (s *Service) persistInbound(ctx context.Context, message IncomingMessage) {
 	storeCtx, cancel := context.WithTimeout(ctx, inboundStoreTimeout)
 	defer cancel()
 
-	if err := s.inbox.Insert(storeCtx, message); err != nil {
+	inserted, err := s.inbox.Insert(storeCtx, message)
+	if err != nil {
 		s.metrics.IncStoreFailed()
 		// The sender and the content are user PII: they are never logged
 		// above Debug, so only the message identity is reported here.
 		s.logger.Info("inbound message not stored",
 			zap.String("message_id", message.ID),
 			zap.Error(err),
+		)
+
+		return
+	}
+	if !inserted {
+		// The routine re-notification path: the row already exists, so the
+		// conflict must not be Info-level noise - and only the message
+		// identity is reported, never the sender or the content.
+		s.metrics.IncStoreConflict()
+		s.logger.Debug("inbound message already stored",
+			zap.String("message_id", message.ID),
 		)
 
 		return

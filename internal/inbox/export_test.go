@@ -59,6 +59,12 @@ func NewTestMetrics(registerer prometheus.Registerer) *Metrics {
 				Help: "Test counter",
 			},
 		),
+		inboxStoreConflictsTotal: factory.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_store_conflicts_total",
+				Help: "Test counter",
+			},
+		),
 		inboxStoreErrorsTotal: factory.NewCounter(
 			prometheus.CounterOpts{
 				Name: "at_gateway_inbox_store_errors_total",
@@ -187,6 +193,8 @@ func InboundCounterValue(m *Metrics, name string) float64 {
 		return testutil.ToFloat64(m.inboundDedupePostRestartTotal)
 	case "at_gateway_inbox_stored_total":
 		return testutil.ToFloat64(m.inboxStoredTotal)
+	case "at_gateway_inbox_store_conflicts_total":
+		return testutil.ToFloat64(m.inboxStoreConflictsTotal)
 	case "at_gateway_inbox_store_errors_total":
 		return testutil.ToFloat64(m.inboxStoreErrorsTotal)
 	default:

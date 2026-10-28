@@ -32,25 +32,37 @@ func NewRepository(db *bun.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// Insert stores one inbound message. The insert IGNORES a row that already
-// exists for the same (device_id, message_id) pair: the modem re-notifies a
-// message it did not delete yet and the retained-entry sweep re-feeds a stored
-// entry after a restart, so the same message must never become a second row.
-// The uniqueness is per DEVICE, so a rotated device id cannot collide with an
-// old row's content hash.
-func (r *Repository) Insert(ctx context.Context, message IncomingMessage) error {
+// Insert stores one inbound message and reports whether a row was ACTUALLY
+// written. The insert IGNORES a row that already exists for the same
+// (device_id, message_id) pair: the modem re-notifies a message it did not
+// delete yet and the retained-entry sweep re-feeds a stored entry after a
+// restart, so the same message must never become a second row. The uniqueness
+// is per DEVICE, so a rotated device id cannot collide with an old row's
+// content hash.
+//
+// inserted is true when the row was written and false when the conflict was
+// ignored because the row already existed - that outcome is NOT an error. If
+// reading the affected-row count itself fails, the error is wrapped and
+// returned: the outcome is unknown, so the caller must count a store failure
+// instead of claiming success.
+func (r *Repository) Insert(ctx context.Context, message IncomingMessage) (bool, error) {
 	model := newInboundModel(message, time.Now().UTC())
 
 	// bun's On() prepends " ON " itself, so the conflict target is bare.
-	_, err := r.db.NewInsert().
+	res, err := r.db.NewInsert().
 		Model(model).
 		On("CONFLICT (device_id, message_id) DO NOTHING").
 		Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("insert inbox message: %w", err)
+		return false, fmt.Errorf("insert inbox message: %w", err)
 	}
 
-	return nil
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read inbox insert rows affected: %w", err)
+	}
+
+	return rows > 0, nil
 }
 
 // List returns one page of stored inbound messages plus the total number of

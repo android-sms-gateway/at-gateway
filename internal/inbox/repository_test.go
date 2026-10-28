@@ -71,9 +71,11 @@ func TestRepository_MigrationAppliesAndRollsBack(t *testing.T) {
 }
 
 // TestRepository_InsertIgnoresTheSameIdentity pins the insert-or-ignore
-// contract: the same message identity under one device is stored once, and the
-// SAME message id under another device is a second row (a rotated device id
-// must not collide with an old row's content hash).
+// contract: the same message identity under one device is stored once - the
+// first insert reports the row written, the second reports the IGNORED
+// conflict without an error - and the SAME message id under another device is
+// a second row (a rotated device id must not collide with an old row's
+// content hash).
 func TestRepository_InsertIgnoresTheSameIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -91,11 +93,22 @@ func TestRepository_InsertIgnoresTheSameIdentity(t *testing.T) {
 		inboxBase(),
 	)
 
-	if err := repo.Insert(ctx, message); err != nil {
+	inserted, err := repo.Insert(ctx, message)
+	if err != nil {
 		t.Fatalf("insert message: %v", err)
 	}
-	if err := repo.Insert(ctx, message); err != nil {
+	if !inserted {
+		t.Error("first insert inserted = false, want true - the row did not exist yet")
+	}
+
+	inserted, err = repo.Insert(ctx, message)
+	if err != nil {
 		t.Fatalf("insert the same identity again: %v", err)
+	}
+	if inserted {
+		t.Error(
+			"second insert inserted = true, want false - the conflict must be reported as ignored, not as a stored row",
+		)
 	}
 
 	rows, total, err := repo.List(ctx, inbox.ListOptions{
@@ -116,8 +129,12 @@ func TestRepository_InsertIgnoresTheSameIdentity(t *testing.T) {
 		"hello",
 		inboxBase(),
 	)
-	if insertErr := repo.Insert(ctx, other); insertErr != nil {
+	insertedOther, insertErr := repo.Insert(ctx, other)
+	if insertErr != nil {
 		t.Fatalf("insert the same identity under another device: %v", insertErr)
+	}
+	if !insertedOther {
+		t.Error("the same identity under another device inserted = false, want true - the uniqueness is per device")
 	}
 
 	_, totalA, err := repo.List(ctx, inbox.ListOptions{
@@ -162,7 +179,7 @@ func TestRepository_ListCountsBeforePagination(t *testing.T) {
 			"hello",
 			base.Add(time.Duration(i)*time.Minute),
 		)
-		if err := repo.Insert(ctx, message); err != nil {
+		if _, err := repo.Insert(ctx, message); err != nil {
 			t.Fatalf("insert message %d: %v", i, err)
 		}
 	}
@@ -188,7 +205,7 @@ func TestRepository_ListCountsBeforePagination(t *testing.T) {
 	// Rows sharing a stamp are ordered by the rowid, newest first.
 	sameStamp := base.Add(time.Hour)
 	for _, id := range []string{"tie-1", "tie-2"} {
-		if insertErr := repo.Insert(ctx, newStoredMessage(
+		if _, insertErr := repo.Insert(ctx, newStoredMessage(
 			id,
 			deviceID,
 			smsgateway.IncomingMessageTypeSMS,
@@ -232,7 +249,7 @@ func TestRepository_ListDateBounds(t *testing.T) {
 		{"at-to", to},
 		{"after-to", to.Add(time.Minute)},
 	} {
-		if err := repo.Insert(ctx, newStoredMessage(
+		if _, err := repo.Insert(ctx, newStoredMessage(
 			row.id,
 			deviceID,
 			smsgateway.IncomingMessageTypeSMS,
@@ -287,7 +304,7 @@ func TestRepository_RoundTripsTheWireReadyContent(t *testing.T) {
 	raw := []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0xff, 0x80}
 	encoded := base64.StdEncoding.EncodeToString(raw)
 
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"sms-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeSMS,
@@ -296,7 +313,7 @@ func TestRepository_RoundTripsTheWireReadyContent(t *testing.T) {
 	)); err != nil {
 		t.Fatalf("insert the text message: %v", err)
 	}
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"data-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeDataSMS,
@@ -349,7 +366,7 @@ func TestRepository_FiltersByType(t *testing.T) {
 
 	deviceID := "device-a"
 
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"sms-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeSMS,
@@ -412,7 +429,7 @@ func TestRepository_ListBoundsAndAscendingOrder(t *testing.T) {
 		{"at-until", until},
 		{"after-until", until.Add(time.Minute)},
 	} {
-		if err := repo.Insert(ctx, newStoredMessage(
+		if _, err := repo.Insert(ctx, newStoredMessage(
 			row.id,
 			deviceID,
 			smsgateway.IncomingMessageTypeSMS,
@@ -464,7 +481,7 @@ func TestRepository_ListEmptyTypesDisablesTheTypeFilter(t *testing.T) {
 	since := inboxBase()
 	until := since.Add(time.Hour)
 
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"sms-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeSMS,
@@ -473,7 +490,7 @@ func TestRepository_ListEmptyTypesDisablesTheTypeFilter(t *testing.T) {
 	)); err != nil {
 		t.Fatalf("insert the text message: %v", err)
 	}
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"data-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeDataSMS,
@@ -527,7 +544,7 @@ func TestRepository_ListFiltersByConcreteTypes(t *testing.T) {
 	since := inboxBase()
 	until := since.Add(time.Hour)
 
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"sms-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeSMS,
@@ -536,7 +553,7 @@ func TestRepository_ListFiltersByConcreteTypes(t *testing.T) {
 	)); err != nil {
 		t.Fatalf("insert the text message: %v", err)
 	}
-	if err := repo.Insert(ctx, newStoredMessage(
+	if _, err := repo.Insert(ctx, newStoredMessage(
 		"data-1",
 		deviceID,
 		smsgateway.IncomingMessageTypeDataSMS,
@@ -594,7 +611,7 @@ func TestRepository_ListAppliesTheExplicitOrder(t *testing.T) {
 	base := inboxBase()
 
 	for i := range 2 {
-		if err := repo.Insert(ctx, newStoredMessage(
+		if _, err := repo.Insert(ctx, newStoredMessage(
 			"id-"+string(rune('a'+i)),
 			deviceID,
 			smsgateway.IncomingMessageTypeSMS,

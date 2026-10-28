@@ -124,7 +124,7 @@ func TestService_ListReturnsOnlyTheLocalDeviceRows(t *testing.T) {
 	f.service.HandleInboundPartForTest(textPart("hello"), inboundBase())
 
 	foreignDevice := "000000000000000000000"
-	if err := f.inbox.Insert(context.Background(), inbox.IncomingMessage{
+	if _, err := f.inbox.Insert(context.Background(), inbox.IncomingMessage{
 		ID:         "ffffffffffffffff",
 		DeviceID:   foreignDevice,
 		Type:       smsgateway.IncomingMessageTypeSMS,
@@ -306,6 +306,45 @@ func TestService_StoreFailureDoesNotStallTheConsumer(t *testing.T) {
 	}
 	if got := f.storedCount(t); got != 2 {
 		t.Errorf("queued envelopes = %d, want 2 - the consumer must keep consuming", got)
+	}
+}
+
+// TestService_PersistCountsAConflictOnce pins the THREE persist outcomes of
+// GAP 2: the same assembled message driven through the inbound path twice
+// stores exactly ONE row - the first pass is stored, the second hits the
+// (device_id, message_id) unique conflict and is counted as a conflict, NOT
+// as a stored row - so at_gateway_inbox_stored_total stays truthful. The
+// conflict path is the accepted D-1 collapse (the row already exists).
+func TestService_PersistCountsAConflictOnce(t *testing.T) {
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{ReassemblyTimeout: 0, SweepInterval: 0})
+
+	// Persistence runs BEFORE the emission and before any dedupe check, so the
+	// second pass reaches the insert even when the dedupe later suppresses the
+	// webhook.
+	f.service.HandleInboundPartForTest(textPart("hello"), inboundBase())
+	f.service.HandleInboundPartForTest(textPart("hello"), inboundBase().Add(time.Minute))
+
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_stored_total"); got != 1 {
+		t.Errorf("stored messages = %v, want 1 - an ignored conflict must not count as stored", got)
+	}
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_store_conflicts_total"); got != 1 {
+		t.Errorf("store conflicts = %v, want 1 - the second pass must be counted as a conflict", got)
+	}
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_store_errors_total"); got != 0 {
+		t.Errorf("store errors = %v, want 0 - a conflict is not a failure", got)
+	}
+
+	// Exactly one row: the collapse is real, the second insert added nothing.
+	_, total, err := f.service.List(context.Background(), inbox.ListOptions{
+		Filter: &inbox.ListFilter{Types: allTypes()},
+	})
+	if err != nil {
+		t.Fatalf("list the stored messages: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("stored rows = %d, want 1", total)
 	}
 }
 
@@ -689,7 +728,7 @@ func TestService_RefreshReplaysOnlyLocalDeviceRows(t *testing.T) {
 	seedInbound(t, f, "sms-local", smsgateway.IncomingMessageTypeSMS, "local", inboundBase())
 
 	foreignDevice := "000000000000000000000"
-	if err := f.inbox.Insert(context.Background(), inbox.IncomingMessage{
+	if _, err := f.inbox.Insert(context.Background(), inbox.IncomingMessage{
 		ID:         "sms-foreign",
 		DeviceID:   foreignDevice,
 		Type:       smsgateway.IncomingMessageTypeSMS,
@@ -832,7 +871,7 @@ func seedInbound(
 ) {
 	t.Helper()
 
-	if err := f.inbox.Insert(context.Background(), inbox.IncomingMessage{
+	if _, err := f.inbox.Insert(context.Background(), inbox.IncomingMessage{
 		ID:         id,
 		DeviceID:   f.devices.Get().ID,
 		Type:       messageType,
