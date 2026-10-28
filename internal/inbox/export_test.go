@@ -71,6 +71,12 @@ func NewTestMetrics(registerer prometheus.Registerer) *Metrics {
 				Help: "Test counter",
 			},
 		),
+		inboxCleanedTotal: factory.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_cleaned_total",
+				Help: "Test counter",
+			},
+		),
 	}
 }
 
@@ -107,6 +113,13 @@ func NewInboundMessage(
 // deterministic.
 func (s *Service) HandleInboundPartForTest(part modem.InboundPart, now time.Time) {
 	s.handleInboundPart(context.Background(), part, now)
+}
+
+// ConfigForTest exposes the effective configuration AFTER the constructor's
+// non-positive fallbacks, so an external test can pin the defaults without a
+// production seam.
+func (s *Service) ConfigForTest() Config {
+	return s.config
 }
 
 // SweepInboundForTest runs the reassembly/dedupe eviction sweep.
@@ -197,6 +210,8 @@ func InboundCounterValue(m *Metrics, name string) float64 {
 		return testutil.ToFloat64(m.inboxStoreConflictsTotal)
 	case "at_gateway_inbox_store_errors_total":
 		return testutil.ToFloat64(m.inboxStoreErrorsTotal)
+	case "at_gateway_inbox_cleaned_total":
+		return testutil.ToFloat64(m.inboxCleanedTotal)
 	default:
 		panic("unknown inbox counter: " + name)
 	}

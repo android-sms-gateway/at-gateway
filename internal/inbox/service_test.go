@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/inbox"
+	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 )
@@ -858,6 +859,177 @@ func TestService_RefreshEmptyWindowEmitsNothing(t *testing.T) {
 	}
 }
 
+// TestService_NonPositiveRetentionFallsBackToDefaults pins AC1's constructor
+// fallbacks: a non-positive Retention falls back to 720h (30 days) and a
+// non-positive CleanupInterval to 24h, exactly like ReassemblyTimeout and
+// SweepInterval fall back today.
+func TestService_NonPositiveRetentionFallsBackToDefaults(t *testing.T) {
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{
+		ReassemblyTimeout: 0,
+		SweepInterval:     0,
+		Retention:         0,
+		CleanupInterval:   -time.Hour,
+	})
+
+	cfg := f.service.ConfigForTest()
+	if cfg.Retention != 720*time.Hour {
+		t.Errorf("Retention = %v, want %v (the non-positive fallback)", cfg.Retention, 720*time.Hour)
+	}
+	if cfg.CleanupInterval != 24*time.Hour {
+		t.Errorf("CleanupInterval = %v, want %v (the non-positive fallback)", cfg.CleanupInterval, 24*time.Hour)
+	}
+}
+
+// TestInbound_CleanupTickerRunsOnTheRunLoop pins the D-7 shape (AC2): the
+// age-based retention cleanup is a SECOND case of the EXISTING single Run
+// loop - the SAME goroutine that consumes the modem hand-off channel - so
+// there is no second goroutine and no second consumer of InboundParts().
+// Driving the real Run with a fast cleanup ticker proves that an aged row is
+// removed and counted as cleaned (AC4), that the inbound part handling keeps
+// working alongside the cleanup ticker, and that cancelling the context stops
+// BOTH tickers: Run returns nil (AC6).
+func TestInbound_CleanupTickerRunsOnTheRunLoop(t *testing.T) {
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{
+		ReassemblyTimeout: 0,
+		SweepInterval:     time.Hour, // the eviction sweep must not interfere
+		Retention:         time.Hour,
+		CleanupInterval:   5 * time.Millisecond,
+	})
+	f.registerWebhook(t, "cleanup", smsgateway.WebhookEventSmsReceived)
+
+	// The aged row is older than now-Retention: the first cleanup tick removes it.
+	seedInbound(t, f, "aged000000000001", smsgateway.IncomingMessageTypeSMS,
+		"aged", time.Now().UTC().Add(-2*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- f.service.Run(ctx)
+	}()
+
+	waitForCounterAtLeast(t, f.metrics, "at_gateway_inbox_cleaned_total", 1)
+
+	// The inbound part handling still works alongside the cleanup ticker: a
+	// fresh message is persisted and emitted while the ticker keeps firing.
+	f.service.HandleInboundPartForTest(modem.InboundPart{
+		Sender:         inboundSender,
+		ReceivedAt:     time.Now().UTC(),
+		TimestampValid: true,
+		Content:        "fresh",
+	}, time.Now().UTC())
+
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_stored_total"); got != 1 {
+		t.Errorf("stored messages = %v, want 1 - part handling must keep working alongside the cleanup ticker", got)
+	}
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_events_total"); got != 1 {
+		t.Errorf("inbound events = %v, want 1", got)
+	}
+
+	// Several further cleanup ticks: the fresh row (received now) is inside
+	// the retention window and must be RETAINED.
+	time.Sleep(50 * time.Millisecond)
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_cleaned_total"); got != 1 {
+		t.Errorf("cleaned rows = %v, want 1 - only the aged row may be removed", got)
+	}
+
+	cancel()
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v, want nil", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after context cancellation - both tickers must stop")
+	}
+
+	rows, total, err := f.service.List(context.Background(), inbox.ListOptions{
+		Filter: &inbox.ListFilter{Types: allTypes()},
+	})
+	if err != nil {
+		t.Fatalf("list after cleanup: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("rows = %d, total = %d, want exactly the fresh row after the cleanup", len(rows), total)
+	}
+	if rows[0].Content != "fresh" {
+		t.Errorf("content = %q, want %q - the fresh row must survive the cleanup", rows[0].Content, "fresh")
+	}
+}
+
+// TestInbound_RunWithACanceledContextReturnsNil pins AC6 on the production
+// entry: Run builds BOTH tickers (the sweep and the retention cleanup) and a
+// canceled context stops the loop immediately - Run returns nil without ever
+// ticking.
+func TestInbound_RunWithACanceledContextReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{
+		ReassemblyTimeout: 0,
+		SweepInterval:     time.Hour,
+		Retention:         time.Hour,
+		CleanupInterval:   time.Hour,
+	})
+	f.registerWebhook(t, "cancel", smsgateway.WebhookEventSmsReceived)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := f.service.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v, want nil", err)
+	}
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_cleaned_total"); got != 0 {
+		t.Errorf("cleaned rows = %v, want 0 - the context was canceled before any tick", got)
+	}
+}
+
+// TestInbound_CleanupOnAFreshStoreKeepsRunning pins that a cleanup pass over
+// a fresh store deletes NOTHING (Repository.DeleteOlderThan reports zero rows
+// without an error) and never stops the loop: Run is still alive after many
+// ticks and returns nil on cancellation.
+func TestInbound_CleanupOnAFreshStoreKeepsRunning(t *testing.T) {
+	t.Parallel()
+
+	f := newInboundFixture(t, inbox.Config{
+		ReassemblyTimeout: 0,
+		SweepInterval:     time.Hour,
+		Retention:         time.Hour,
+		CleanupInterval:   5 * time.Millisecond,
+	})
+	f.registerWebhook(t, "fresh", smsgateway.WebhookEventSmsReceived)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- f.service.Run(ctx)
+	}()
+
+	// Several cleanup ticks over the empty store.
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case runErr := <-done:
+		t.Fatalf("Run exited on its own over a fresh store: %v", runErr)
+	default:
+	}
+	if got := inbox.InboundCounterValue(f.metrics, "at_gateway_inbox_cleaned_total"); got != 0 {
+		t.Errorf("cleaned rows = %v, want 0 on a fresh store", got)
+	}
+
+	cancel()
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v, want nil", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after context cancellation")
+	}
+}
+
 // seedInbound stores one inbound row of the local device with an explicit
 // identity and receive stamp, bypassing the modem pipeline: the replay reads
 // stored rows, so the fixtures seed them directly.
@@ -889,4 +1061,19 @@ func seedInbound(
 // helpers produce.
 func refreshWindow() (time.Time, time.Time) {
 	return inboundBase().Add(-time.Hour), inboundBase().Add(24 * time.Hour)
+}
+
+// waitForCounterAtLeast polls a named inbox counter until it reaches want, or
+// fails the test with the last observed value once the deadline passes.
+func waitForCounterAtLeast(t *testing.T, metrics *inbox.Metrics, name string, want float64) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if inbox.InboundCounterValue(metrics, name) >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s = %v, want >= %v before the deadline", name, inbox.InboundCounterValue(metrics, name), want)
 }

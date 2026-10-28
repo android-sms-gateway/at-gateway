@@ -50,8 +50,9 @@ type Service struct {
 
 // NewService wires the inbound pipeline with its configuration and the inbox
 // store, device, modem, webhook, metrics and logger dependencies. A
-// non-positive ReassemblyTimeout falls back to five minutes and a non-positive
-// SweepInterval to one second; the returned service is driven by Run.
+// non-positive ReassemblyTimeout falls back to five minutes, a non-positive
+// SweepInterval to one second, a non-positive Retention to 720h (30 days) and
+// a non-positive CleanupInterval to 24h; the returned service is driven by Run.
 func NewService(
 	config Config,
 	inbox *Repository,
@@ -66,6 +67,12 @@ func NewService(
 	}
 	if config.SweepInterval <= 0 {
 		config.SweepInterval = defaultSweepInterval
+	}
+	if config.Retention <= 0 {
+		config.Retention = defaultRetention
+	}
+	if config.CleanupInterval <= 0 {
+		config.CleanupInterval = defaultCleanupInterval
 	}
 
 	return &Service{
@@ -90,14 +97,30 @@ func NewService(
 
 // Run consumes the modem's inbound parts until ctx is canceled: a complete
 // message is emitted immediately, an incomplete concatenation stays buffered
-// until every part arrived, and the reassembly/dedupe eviction runs on this
-// module's OWN ticker (config.SweepInterval), independent of the messages
-// poll interval. When the context is done the groups still incomplete are
+// until every part arrived, the reassembly/dedupe eviction runs on this
+// module's OWN ticker (config.SweepInterval), and the age-based retention
+// cleanup of the stored rows runs on a SECOND ticker (config.CleanupInterval)
+// of this SAME loop - deliberately NO second goroutine, NO second runnable
+// and NO second consumer of modemSvc.InboundParts() (owner decision D-7),
+// because a competing consumer could stall the modem hand-off budget into
+// permanent SMS loss. When the context is done the groups still incomplete are
 // abort-accounted - their remaining parts can never complete in this process -
-// and Run returns nil.
+// both tickers are stopped and Run returns nil.
 func (s *Service) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.config.SweepInterval)
 	defer ticker.Stop()
+
+	// The retention cleanup ticker joins this SAME select loop as a second
+	// case (D-7). A nil channel never fires, so a non-positive interval
+	// disables the cleanup the way the modem Run loop disables its tickers;
+	// NewService has already replaced a non-positive interval with the
+	// default cadence, so the channel is normally always live.
+	var cleanupCh <-chan time.Time
+	if s.config.CleanupInterval > 0 {
+		cleanupTicker := time.NewTicker(s.config.CleanupInterval)
+		defer cleanupTicker.Stop()
+		cleanupCh = cleanupTicker.C
+	}
 
 	for {
 		select {
@@ -108,6 +131,8 @@ func (s *Service) Run(ctx context.Context) error {
 			s.handleInboundPart(ctx, part, time.Now().UTC())
 		case <-ticker.C:
 			s.sweepInbound(time.Now().UTC())
+		case <-cleanupCh:
+			s.cleanupInbox(ctx, time.Now().UTC())
 		}
 	}
 }
@@ -384,6 +409,31 @@ func (s *Service) sweepInbound(now time.Time) {
 	}
 
 	s.inboundDedup.sweep(now)
+}
+
+// cleanupInbox enforces the age-based retention of the stored rows: every row
+// with received_at STRICTLY older than now-Config.Retention is deleted via
+// [Repository.DeleteOlderThan]. The cutoff is EXCLUSIVE - a row received
+// exactly at the cutoff is RETAINED - the same half-open convention the list
+// filter's upper bound uses. It runs on the Run loop goroutine with the Run
+// context: a failure is logged and NEVER stops the loop (the next tick
+// retries), and the rows removed are counted as cleaned. The stored rows carry
+// PII (sender, content), so only the row COUNT is logged.
+func (s *Service) cleanupInbox(ctx context.Context, now time.Time) {
+	cutoff := now.Add(-s.config.Retention)
+
+	rows, err := s.inbox.DeleteOlderThan(ctx, cutoff)
+	if err != nil {
+		s.logger.Error("cleanup inbox retention", zap.Error(err))
+
+		return
+	}
+	if rows == 0 {
+		return
+	}
+
+	s.metrics.IncCleaned(int(rows))
+	s.logger.Debug("inbox retention cleanup removed rows", zap.Int64("rows", rows))
 }
 
 // abortInbound counts the groups still incomplete when the worker stops; their

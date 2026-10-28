@@ -85,3 +85,27 @@ func (r *Repository) List(ctx context.Context, options ListOptions) ([]IncomingM
 
 	return result, total, nil
 }
+
+// DeleteOlderThan removes every stored row STRICTLY older than cutoff
+// (received_at < cutoff) and returns the number of rows removed. The bound is
+// EXCLUSIVE: a row received exactly at the cutoff is RETAINED, the same
+// half-open convention the list filter's upper bound uses, so both bounds of
+// the retention window agree. It is a plain range delete over the received_at
+// index - no ORDER BY, no LIMIT (modernc SQLite supports neither for DELETE),
+// so no nested subquery is needed.
+func (r *Repository) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := r.db.NewDelete().
+		Model((*inboxModel)(nil)).
+		Where("received_at < ?", cutoff).
+		Exec(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("delete old inbox messages: %w", err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read inbox delete rows affected: %w", err)
+	}
+
+	return rows, nil
+}

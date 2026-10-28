@@ -670,6 +670,99 @@ func TestRepository_ListAppliesTheExplicitOrder(t *testing.T) {
 	}
 }
 
+// TestRepository_DeleteOlderThanIsExclusive pins the retention boundary (AC3):
+// the delete is STRICTLY received_at < cutoff - a row received EXACTLY at the
+// cutoff is RETAINED, the same half-open convention as the list filter's
+// upper bound - and the affected-row count comes back. A second pass reports
+// zero: the delete is idempotent over a store with nothing older left.
+func TestRepository_DeleteOlderThanIsExclusive(t *testing.T) {
+	t.Parallel()
+
+	repo := inbox.NewRepository(newInboundDB(t))
+	ctx := context.Background()
+
+	deviceID := "device-a"
+	cutoff := inboxBase().Add(time.Hour)
+
+	for _, row := range []struct {
+		id string
+		at time.Time
+	}{
+		{"before-cutoff", cutoff.Add(-time.Nanosecond)},
+		{"at-cutoff", cutoff},
+		{"after-cutoff", cutoff.Add(time.Nanosecond)},
+	} {
+		if _, err := repo.Insert(ctx, newStoredMessage(
+			row.id,
+			deviceID,
+			smsgateway.IncomingMessageTypeSMS,
+			"hello",
+			row.at,
+		)); err != nil {
+			t.Fatalf("insert %s: %v", row.id, err)
+		}
+	}
+
+	rows, err := repo.DeleteOlderThan(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("delete older than cutoff: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("rows affected = %d, want 1 - only the row STRICTLY before the cutoff is deleted", rows)
+	}
+
+	remaining, total, err := repo.List(ctx, inbox.ListOptions{
+		Filter: &inbox.ListFilter{DeviceID: &deviceID, Types: allTypes()},
+	})
+	if err != nil {
+		t.Fatalf("list after the delete: %v", err)
+	}
+	if total != 2 || len(remaining) != 2 {
+		t.Fatalf("rows = %d, total = %d, want 2 - the row AT the cutoff must be RETAINED", len(remaining), total)
+	}
+	seen := make(map[string]bool, len(remaining))
+	for _, row := range remaining {
+		seen[row.ID] = true
+	}
+	if !seen["at-cutoff"] {
+		t.Errorf(
+			"rows = %s, want the row AT the cutoff retained (received_at == cutoff is not < cutoff)",
+			rowIDs(remaining),
+		)
+	}
+	if !seen["after-cutoff"] {
+		t.Errorf("rows = %s, want the row AFTER the cutoff retained", rowIDs(remaining))
+	}
+	if seen["before-cutoff"] {
+		t.Errorf("rows = %s, want the row before the cutoff deleted", rowIDs(remaining))
+	}
+
+	again, err := repo.DeleteOlderThan(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("second delete pass: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("second pass rows affected = %d, want 0", again)
+	}
+}
+
+// TestRepository_DeleteOlderThanOnAFreshStore pins that a retention pass over
+// an empty store deletes NOTHING without an error: zero rows affected, nil
+// error - the cleanup tick of a fresh gateway must be a silent no-op.
+func TestRepository_DeleteOlderThanOnAFreshStore(t *testing.T) {
+	t.Parallel()
+
+	repo := inbox.NewRepository(newInboundDB(t))
+
+	rows, err := repo.DeleteOlderThan(context.Background(), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("delete on a fresh store: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("rows affected = %d, want 0 on a fresh store", rows)
+	}
+}
+
 // inboxBase is the receive stamp of the repository fixtures.
 func inboxBase() time.Time {
 	return time.Date(2026, time.October, 22, 9, 0, 0, 0, time.UTC)

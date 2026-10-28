@@ -22,6 +22,7 @@ type Metrics struct {
 	inboxStoredTotal               prometheus.Counter
 	inboxStoreConflictsTotal       prometheus.Counter
 	inboxStoreErrorsTotal          prometheus.Counter
+	inboxCleanedTotal              prometheus.Counter
 }
 
 // NewMetrics registers and returns the inbox metrics. promauto panics on
@@ -82,6 +83,13 @@ func NewMetrics() *Metrics {
 					"e.g. because the store write failed or timed out",
 			},
 		),
+		inboxCleanedTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_cleaned_total",
+				Help: "Total number of stored inbox rows removed by the age-based retention cleanup: rows whose " +
+					"received stamp is older than the configured retention window",
+			},
+		),
 	}
 }
 
@@ -137,4 +145,10 @@ func (m *Metrics) IncStoreConflict() {
 // record, the emission is the notification.
 func (m *Metrics) IncStoreFailed() {
 	m.inboxStoreErrorsTotal.Inc()
+}
+
+// IncCleaned counts the stored rows removed by ONE age-based retention
+// cleanup pass; unlike the binary mutators above it adds the pass's row count.
+func (m *Metrics) IncCleaned(n int) {
+	m.inboxCleanedTotal.Add(float64(n))
 }
