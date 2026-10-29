@@ -240,9 +240,9 @@ GET {{baseURL}}/api/v1/inbox HTTP/1.1
 # Replay the stored window as inbound webhooks -> 202 with body "Accepted"
 # (text/plain, server parity). SYNCHRONOUS and NOT bounded by a row count:
 # the duration is proportional to the requested window. `messageTypes` values
-# are GROUPED (SMS = SMS + DATA_SMS, MMS = MMS + MMS_DOWNLOADED; omitted
-# defaults to SMS) while the LIST `type` filter stays specific - the
-# asymmetry is deliberate.
+# are matched EXACTLY against the stored type (omitted defaults to SMS); only
+# SMS and MMS can be named here, so DATA_SMS rows are listable but NOT
+# replayable over HTTP.
 # @name postInboxRefresh
 POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
@@ -268,9 +268,9 @@ Content-Type: application/json
 {"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Batch"}
 
 ###
-# A literal DATA_SMS class -> 400 (validation failed MessageTypes oneof):
-# the pinned validator accepts only the GROUPED classes SMS and MMS;
-# DATA_SMS rows replay through the grouped SMS value instead
+# A literal DATA_SMS value -> 400 (validation failed MessageTypes oneof):
+# the pinned validator accepts only SMS and MMS; DATA_SMS rows cannot be
+# replayed over HTTP
 POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 Content-Type: application/json
