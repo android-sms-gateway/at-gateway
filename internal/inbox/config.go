@@ -31,6 +31,10 @@ const defaultCleanupInterval = 24 * time.Hour
 // The bound turns a stuck write into a counted store failure.
 const inboundStoreTimeout = 2 * time.Second
 
+// inboxCleanupTimeout bounds one retention delete on the shared SQLite
+// connection so a slow delete cannot stall the single inbound consumer.
+const inboxCleanupTimeout = 10 * time.Second
+
 // Config holds the inbound SMS pipeline settings: the reassembly window, the
 // eviction cadence that drives it, and the age-based retention of the stored
 // rows with its cleanup cadence.

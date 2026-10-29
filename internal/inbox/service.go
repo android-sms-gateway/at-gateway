@@ -418,11 +418,16 @@ func (s *Service) sweepInbound(now time.Time) {
 // filter's upper bound uses. It runs on the Run loop goroutine with the Run
 // context: a failure is logged and NEVER stops the loop (the next tick
 // retries), and the rows removed are counted as cleaned. The stored rows carry
-// PII (sender, content), so only the row COUNT is logged.
+// PII (sender, content), so only the row COUNT is logged. The delete itself is
+// bounded by [inboxCleanupTimeout] so a slow delete on the shared connection
+// cannot stall the single inbound consumer.
 func (s *Service) cleanupInbox(ctx context.Context, now time.Time) {
 	cutoff := now.Add(-s.config.Retention)
 
-	rows, err := s.inbox.DeleteOlderThan(ctx, cutoff)
+	deleteCtx, cancel := context.WithTimeout(ctx, inboxCleanupTimeout)
+	defer cancel()
+
+	rows, err := s.inbox.DeleteOlderThan(deleteCtx, cutoff)
 	if err != nil {
 		s.logger.Error("cleanup inbox retention", zap.Error(err))
 
