@@ -259,6 +259,15 @@ Content-Type: application/json
 {"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Disabled"}
 
 ###
+# Delivery DEFAULT: neither webhookDelivery nor triggerWebhooks in the body ->
+# 202 and NOTHING is emitted (delivery resolves to Disabled)
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z"}
+
+###
 # Batch -> 400 {"message":"refresh inbox messages: batch delivery not supported","code":400}
 # (this gateway has no batch inbound emitters)
 POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
@@ -266,6 +275,26 @@ Authorization: Basic sms:{{basicPassword}}
 Content-Type: application/json
 
 {"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Batch"}
+
+###
+# NEGATIVE DATA_SMS case (exact matching): delivery is Individual (via the
+# deprecated triggerWebhooks=true) but messageTypes is OMITTED -> default
+# [SMS], so a stored DATA_SMS row in the window is NOT replayed; expect 202
+# and no sms:data-received event for it
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","triggerWebhooks":true}
+
+###
+# NEGATIVE DATA_SMS case (exact matching): an explicit ["SMS"] also does NOT
+# replay a stored DATA_SMS row - no grouping SMS -> DATA_SMS, no expansion
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","messageTypes":["SMS"],"webhookDelivery":"Individual"}
 
 ###
 # A literal DATA_SMS value -> 400 (validation failed MessageTypes oneof):
