@@ -5,6 +5,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// inboundReassemblyEvictedHelp documents the ONE eviction counter of this
+// module. It counts TWO causes - an elapsed reassembly window and the
+// concurrent-group capacity - so the Help names both.
+const inboundReassemblyEvictedHelp = "Total number of incomplete inbound reassembly groups evicted before all parts " +
+	"arrived, by cause: the reassembly window elapsed, or the concurrent-group capacity evicted the oldest group"
+
 // Metrics holds the inbox module Prometheus counters. The fields stay
 // unexported and are reachable only through the Inc* mutators below.
 type Metrics struct {
@@ -13,13 +19,11 @@ type Metrics struct {
 	inboundReassemblyAbortedTotal  prometheus.Counter
 	inboundDedupeBlockedTotal      prometheus.Counter
 	inboundDedupePostRestartTotal  prometheus.Counter
+	inboxStoredTotal               prometheus.Counter
+	inboxStoreConflictsTotal       prometheus.Counter
+	inboxStoreErrorsTotal          prometheus.Counter
+	inboxCleanedTotal              prometheus.Counter
 }
-
-// inboundReassemblyEvictedHelp documents the ONE eviction counter of this
-// module. It counts TWO causes - an elapsed reassembly window and the
-// concurrent-group capacity - so the Help names both.
-const inboundReassemblyEvictedHelp = "Total number of incomplete inbound reassembly groups evicted before all parts " +
-	"arrived, by cause: the reassembly window elapsed, or the concurrent-group capacity evicted the oldest group"
 
 // NewMetrics registers and returns the inbox metrics. promauto panics on
 // duplicate registration, so tests must build Metrics with plain constructors.
@@ -58,6 +62,34 @@ func NewMetrics() *Metrics {
 					"the in-memory dedupe carries no memory of a previous process and the delivery cycle restarts",
 			},
 		),
+		inboxStoredTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_stored_total",
+				Help: "Total number of inbound messages persisted in the local inbox store",
+			},
+		),
+		inboxStoreConflictsTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_store_conflicts_total",
+				Help: "Total number of inbound inbox insert attempts that hit the (device_id, message_id) " +
+					"unique conflict and were ignored because the row already existed: the accepted D-1 " +
+					"collapse of byte-identical content, or a modem re-notification of a message already stored",
+			},
+		),
+		inboxStoreErrorsTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_store_errors_total",
+				Help: "Total number of inbound messages that could not be persisted in the local inbox store, " +
+					"e.g. because the store write failed or timed out",
+			},
+		),
+		inboxCleanedTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "at_gateway_inbox_cleaned_total",
+				Help: "Total number of stored inbox rows removed by the age-based retention cleanup: rows whose " +
+					"received stamp is older than the configured retention window",
+			},
+		),
 	}
 }
 
@@ -91,4 +123,32 @@ func (m *Metrics) IncDedupeBlocked() {
 // post-start observation window (see Service.emitInbound).
 func (m *Metrics) IncDedupeSkippedPostRestart() {
 	m.inboundDedupePostRestartTotal.Inc()
+}
+
+// IncStored counts one inbound message persisted in the local inbox store.
+func (m *Metrics) IncStored() {
+	m.inboxStoredTotal.Inc()
+}
+
+// IncStoreConflict counts one inbox insert attempt that hit the
+// (device_id, message_id) unique conflict and was ignored because the row
+// already existed - the accepted D-1 collapse of byte-identical content, or a
+// modem re-notification of a message already stored. It is NOT a store
+// failure: the row is present, only the write was skipped.
+func (m *Metrics) IncStoreConflict() {
+	m.inboxStoreConflictsTotal.Inc()
+}
+
+// IncStoreFailed counts one inbound message that could NOT be persisted in the
+// local inbox store, e.g. because the store write failed or timed out. The
+// webhook emission of such a message still happens: the row is the durable
+// record, the emission is the notification.
+func (m *Metrics) IncStoreFailed() {
+	m.inboxStoreErrorsTotal.Inc()
+}
+
+// IncCleaned counts the stored rows removed by ONE age-based retention
+// cleanup pass; unlike the binary mutators above it adds the pass's row count.
+func (m *Metrics) IncCleaned(n int) {
+	m.inboxCleanedTotal.Add(float64(n))
 }

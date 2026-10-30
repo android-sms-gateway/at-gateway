@@ -136,7 +136,7 @@ const docTemplate = `{
         },
         "/inbox": {
             "get": {
-                "description": "Retrieves incoming messages with filtering and pagination.",
+                "description": "Retrieves inbox messages with filtering and pagination.",
                 "produces": [
                     "application/json"
                 ],
@@ -144,7 +144,7 @@ const docTemplate = `{
                     "User",
                     "Inbox"
                 ],
-                "summary": "Get incoming messages",
+                "summary": "Get inbox messages",
                 "parameters": [
                     {
                         "enum": [
@@ -154,7 +154,7 @@ const docTemplate = `{
                             "MMS_DOWNLOADED"
                         ],
                         "type": "string",
-                        "description": "Filter incoming messages by type",
+                        "description": "Filter inbox messages by type",
                         "name": "type",
                         "in": "query"
                     },
@@ -198,7 +198,7 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "A list of incoming messages",
+                        "description": "A list of inbox messages",
                         "schema": {
                             "type": "array",
                             "items": {
@@ -235,19 +235,13 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/smsgateway.ErrorResponse"
                         }
-                    },
-                    "501": {
-                        "description": "Not implemented",
-                        "schema": {
-                            "$ref": "#/definitions/smsgateway.ErrorResponse"
-                        }
                     }
                 }
             }
         },
         "/inbox/refresh": {
             "post": {
-                "description": "Refreshes inbox messages. Webhooks are triggered when triggerWebhooks is true.",
+                "description": "Refreshes inbox messages. Webhook triggering depends on the ` + "`" + `webhookDelivery` + "`" + ` parameter.",
                 "consumes": [
                     "application/json"
                 ],

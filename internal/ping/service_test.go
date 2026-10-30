@@ -138,7 +138,7 @@ func TestRun_TicksRepeatedlyAndEmitsOnlyPingEnvelopes(t *testing.T) {
 
 // TestRun_NonPositiveIntervalDisablesEmission pins the opt-out: a zero
 // (or negative) interval makes Run return immediately without a single tick,
-// which is the PING__INTERVAL=0 contract.
+// which is the zero-interval opt-out contract.
 func TestRun_NonPositiveIntervalDisablesEmission(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -579,7 +579,7 @@ func waitForQueueRows(t *testing.T, bunDB *bun.DB, want int) {
 
 // waitForCompletedRows blocks until no queue row is left un-delivered, i.e. the
 // worker completed every heartbeat the ticker enqueued. Completed rows are kept
-// for WEBHOOKS__QUEUE__CLEANUP_RETENTION, so the queue does not empty.
+// for the configured queue cleanup retention, so the queue does not empty.
 func waitForCompletedRows(t *testing.T, bunDB *bun.DB) {
 	t.Helper()
 

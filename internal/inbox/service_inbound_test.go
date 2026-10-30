@@ -21,21 +21,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestMain warms the GSM charsets on the main goroutine before any fixture
-// builds a modem service: warthog618/sms initialises them lazily, and the
-// parallel tests below would otherwise race on that first construction.
-func TestMain(m *testing.M) {
-	modem.WarmGSMCharsets()
-	os.Exit(m.Run())
-}
-
-// inboundBase is the service-centre stamp every inbound fixture carries; it is
-// the value the emitted receivedAt must reproduce in UTC. It is a function
-// because the linters forbid package-level variables in tests.
-func inboundBase() time.Time {
-	return time.Date(2026, time.October, 2, 12, 0, 0, 0, time.UTC)
-}
-
 // inboundSender is the originating address of every fixture part.
 const inboundSender = "+79990001234"
 
@@ -48,6 +33,8 @@ type inboundFixture struct {
 	repo     *webhooks.Repository
 	metrics  *inbox.Metrics
 	modem    *modem.Service
+	inbox    *inbox.Repository
+	devices  *devices.Service
 	db       *bun.DB
 }
 
@@ -110,6 +97,8 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 
 	service := inbox.NewService(
 		config,
+		inbox.NewRepository(bunDB),
+		devicesSvc,
 		modemSvc,
 		webhooksSvc,
 		metrics,
@@ -122,6 +111,8 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 		repo:     webhooks.NewRepository(bunDB),
 		metrics:  metrics,
 		modem:    modemSvc,
+		inbox:    inbox.NewRepository(bunDB),
+		devices:  devicesSvc,
 		db:       bunDB,
 	}
 }
@@ -206,51 +197,12 @@ func (f inboundFixture) payloadsOf(t *testing.T) map[string]json.RawMessage {
 	return payloads
 }
 
-// textPart is a single-part text SMS-DELIVER fixture.
-func textPart(content string) modem.InboundPart {
-	return modem.InboundPart{
-		Sender:         inboundSender,
-		ReceivedAt:     inboundBase(),
-		TimestampValid: true,
-		Content:        content,
-		Port:           0,
-		Ported:         false,
-		Concat:         nil,
-	}
-}
-
-// concatPart is part `sequence` of a `segments`-part message.
-func concatPart(
-	content string,
-	segments, sequence, ref, refWidth int,
-) modem.InboundPart {
-	return modem.InboundPart{
-		Sender:         inboundSender,
-		ReceivedAt:     inboundBase(),
-		TimestampValid: true,
-		Content:        content,
-		Port:           0,
-		Ported:         false,
-		Concat: &modem.ConcatRef{
-			Segments: segments,
-			Sequence: sequence,
-			Ref:      ref,
-			RefWidth: refWidth,
-		},
-	}
-}
-
-// dataPart is a port-addressed data SMS-DELIVER fixture.
-func dataPart(content string, port uint16) modem.InboundPart {
-	return modem.InboundPart{
-		Sender:         inboundSender,
-		ReceivedAt:     inboundBase(),
-		TimestampValid: true,
-		Content:        content,
-		Port:           port,
-		Ported:         true,
-		Concat:         nil,
-	}
+// TestMain warms the GSM charsets on the main goroutine before any fixture
+// builds a modem service: warthog618/sms initialises them lazily, and the
+// parallel tests below would otherwise race on that first construction.
+func TestMain(m *testing.M) {
+	modem.WarmGSMCharsets()
+	os.Exit(m.Run())
 }
 
 // TestInbound_SinglePartEmitsOneSignedPayload pins the sms:received contract on
@@ -420,11 +372,6 @@ func TestInbound_ConcatReassemblesIntoOneEvent(t *testing.T) {
 			}
 		})
 	}
-}
-
-// partText is the content of part index i (0-based) in the concat fixtures.
-func partText(index int) string {
-	return "abcdefgh"[index*4 : index*4+4]
 }
 
 // TestInbound_ConcatRefCollisionDoesNotMerge pins the (sender, refWidth, ref)
@@ -646,42 +593,6 @@ func TestInbound_ReassemblyEvictionMetricHelpNamesBothCauses(t *testing.T) {
 	if strings.Contains(help, "timeout") {
 		t.Errorf("help %q describes only the timeout cause", help)
 	}
-}
-
-// productionMetricHelp reads the Help string of a metric straight off the
-// default registry. NewMetrics registers there and panics on a duplicate, so
-// the family is built only while it is still absent: a repeated -count run
-// reuses the already-registered one.
-func productionMetricHelp(t *testing.T, name string) string {
-	t.Helper()
-
-	if help, found := gatheredMetricHelp(name); found {
-		return help
-	}
-
-	inbox.NewMetrics()
-
-	help, found := gatheredMetricHelp(name)
-	if !found {
-		t.Fatalf("metric %s was not registered by NewMetrics", name)
-	}
-
-	return help
-}
-
-func gatheredMetricHelp(name string) (string, bool) {
-	families, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		return "", false
-	}
-
-	for _, family := range families {
-		if family.GetName() == name {
-			return family.GetHelp(), true
-		}
-	}
-
-	return "", false
 }
 
 // TestInbound_ShutdownAbortsIncompleteGroups pins the shutdown accounting: the
@@ -1008,11 +919,6 @@ func TestInbound_DedupeCapacityEvictsTheOldest(t *testing.T) {
 	}
 }
 
-// idForIndex is the deterministic message id of the capacity fixture.
-func idForIndex(index int) string {
-	return "message-" + strconv.Itoa(index)
-}
-
 // TestInbound_PostRestartWindowCountsAcceptedEmissions pins the post-restart
 // observability: inside the observation window an accepted emission is counted
 // (the dedupe has no memory of a previous process), and the counting stops once
@@ -1047,4 +953,104 @@ func TestInbound_PostRestartWindowCountsAcceptedEmissions(t *testing.T) {
 	); got != 1 {
 		t.Errorf("post-restart emissions = %v, want the counting to stop after the window", got)
 	}
+}
+
+// inboundBase is the service-centre stamp every inbound fixture carries; it is
+// the value the emitted receivedAt must reproduce in UTC. It is a function
+// because the linters forbid package-level variables in tests.
+func inboundBase() time.Time {
+	return time.Date(2026, time.October, 2, 12, 0, 0, 0, time.UTC)
+}
+
+// textPart is a single-part text SMS-DELIVER fixture.
+func textPart(content string) modem.InboundPart {
+	return modem.InboundPart{
+		Sender:         inboundSender,
+		ReceivedAt:     inboundBase(),
+		TimestampValid: true,
+		Content:        content,
+		Port:           0,
+		Ported:         false,
+		Concat:         nil,
+	}
+}
+
+// concatPart is part `sequence` of a `segments`-part message.
+func concatPart(
+	content string,
+	segments, sequence, ref, refWidth int,
+) modem.InboundPart {
+	return modem.InboundPart{
+		Sender:         inboundSender,
+		ReceivedAt:     inboundBase(),
+		TimestampValid: true,
+		Content:        content,
+		Port:           0,
+		Ported:         false,
+		Concat: &modem.ConcatRef{
+			Segments: segments,
+			Sequence: sequence,
+			Ref:      ref,
+			RefWidth: refWidth,
+		},
+	}
+}
+
+// dataPart is a port-addressed data SMS-DELIVER fixture.
+func dataPart(content string, port uint16) modem.InboundPart {
+	return modem.InboundPart{
+		Sender:         inboundSender,
+		ReceivedAt:     inboundBase(),
+		TimestampValid: true,
+		Content:        content,
+		Port:           port,
+		Ported:         true,
+		Concat:         nil,
+	}
+}
+
+// partText is the content of part index i (0-based) in the concat fixtures.
+func partText(index int) string {
+	return "abcdefgh"[index*4 : index*4+4]
+}
+
+// productionMetricHelp reads the Help string of a metric straight off the
+// default registry. NewMetrics registers there and panics on a duplicate, so
+// the family is built only while it is still absent: a repeated -count run
+// reuses the already-registered one.
+func productionMetricHelp(t *testing.T, name string) string {
+	t.Helper()
+
+	if help, found := gatheredMetricHelp(name); found {
+		return help
+	}
+
+	inbox.NewMetrics()
+
+	help, found := gatheredMetricHelp(name)
+	if !found {
+		t.Fatalf("metric %s was not registered by NewMetrics", name)
+	}
+
+	return help
+}
+
+func gatheredMetricHelp(name string) (string, bool) {
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return "", false
+	}
+
+	for _, family := range families {
+		if family.GetName() == name {
+			return family.GetHelp(), true
+		}
+	}
+
+	return "", false
+}
+
+// idForIndex is the deterministic message id of the capacity fixture.
+func idForIndex(index int) string {
+	return "message-" + strconv.Itoa(index)
 }
