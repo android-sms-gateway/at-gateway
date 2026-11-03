@@ -86,16 +86,25 @@ type inboundMessage struct {
 
 // inboundMessageID is the content-deterministic identity of an assembled
 // inbound message: the first 16 hex chars of a SHA-256 over the sender, the
-// service-centre stamp (when the modem reported a usable one), the assembled
+// service-centre stamp (prepended only when timestampValid), the assembled
 // content, the destination port and the concatenation reference.
 //
-// The identity is what CONSUMERS deduplicate on, because webhook delivery is
-// AT-LEAST-ONCE: a re-notification, a retry and a post-restart cycle all carry
-// the same id. When the TP-SCTS is absent or implausible the stamp component
-// is OMITTED (not zeroed), so the id stays stable across re-notifications;
-// the accepted consequence is that byte-identical content from the same sender
-// inside the dedupe window collapses to one id (counted by
-// at_gateway_inbox_dedupe_blocked_total).
+// The identity does DOUBLE DUTY. It is the key CONSUMERS deduplicate on,
+// because webhook delivery is AT-LEAST-ONCE: a re-notification, a retry and a
+// post-restart cycle all carry the same id - and it is the PERSISTED ROW KEY
+// (message_id under UNIQUE(device_id, message_id)), which is why
+// IncomingMessage.ID equals the webhook messageId (the server contract). When
+// the TP-SCTS is absent or implausible the stamp component is OMITTED (not
+// zeroed), so a re-notification OBSERVED AT A LATER TIME still hashes to the
+// same id: omitting it is precisely why a re-read cannot mint a second row.
+//
+// ACCEPTED CONSEQUENCE (owner decision D-1, ratified): byte-identical content
+// from the same sender without a usable stamp collapses to ONE stored row
+// forever WITHIN A DEVICE - the message is listed and replayed once although
+// BOTH webhook emissions fire (the dedupe only damps within its TTL). That
+// store collapse is counted by at_gateway_inbox_store_conflicts_total, NOT by
+// at_gateway_inbox_dedupe_blocked_total, which counts suppressed webhook
+// emissions only.
 //
 // This 16-hex-char form DIVERGES from the Android gateway's 8-hex-char
 // hashCode form; both are deterministic per message, and the divergence is

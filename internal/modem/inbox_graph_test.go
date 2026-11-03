@@ -72,7 +72,7 @@ func TestInboxGraphLifecycle(t *testing.T) {
 func runInboxGraph(t *testing.T, withRun bool) {
 	t.Helper()
 
-	webhooksSvc, _ := newWebhookFixture(t)
+	webhooksSvc, _, bunDB, devicesSvc := newWebhookFixtureWithStore(t)
 	modemSvc := modem.NewService(modem.Config{
 		Port:           "",
 		BaudRate:       0,
@@ -98,6 +98,8 @@ func runInboxGraph(t *testing.T, withRun bool) {
 		}),
 		fx.Supply(modemSvc),
 		fx.Supply(webhooksSvc),
+		fx.Supply(bunDB),
+		fx.Supply(devicesSvc),
 	)
 
 	startCtx, cancelStart := context.WithTimeout(context.Background(), appStartTimeout)
