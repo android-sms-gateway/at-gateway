@@ -91,13 +91,15 @@ docker run -d --name at-gateway \
 
 ## 🔌 API Overview
 
-| Method | Path               | Description                     |
-| ------ | ------------------ | ------------------------------- |
-| GET    | `/health`          | Health probes (`live`, `ready`) |
-| GET    | `/metrics`         | Prometheus metrics              |
-| GET    | `/api/v1`          | Service status                  |
-| GET    | `/api/v1/devices`  | Registered devices              |
-| GET    | `/api/v1/messages` | Message endpoints (scaffolded)  |
+| Method | Path                    | Description                        |
+| ------ | ----------------------- | ---------------------------------- |
+| GET    | `/health`               | Health probes (`live`, `ready`)    |
+| GET    | `/metrics`              | Prometheus metrics                 |
+| GET    | `/api/v1`               | Service status                     |
+| GET    | `/api/v1/devices`       | Registered devices                 |
+| GET    | `/api/v1/messages`      | Message endpoints (scaffolded)     |
+| GET    | `/api/v1/inbox`         | Stored incoming messages           |
+| POST   | `/api/v1/inbox/refresh` | Replay stored messages as webhooks |
 
 All `/api/v1` routes require HTTP Basic auth. Full reference: [OpenAPI docs](https://docs.sms-gate.app/).
 

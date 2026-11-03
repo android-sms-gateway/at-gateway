@@ -47,12 +47,12 @@ func Command() *cli.Command {
 			},
 			&cli.IntFlag{
 				Name:  "max-parts",
-				Usage: "Maximum number of concatenated SMS parts (default: MESSAGES__MAX_SEGMENTS, 10)",
+				Usage: "Maximum number of concatenated SMS parts (default: 10)",
 				Value: 0,
 			},
 			&cli.DurationFlag{
 				Name:  "timeout",
-				Usage: "Per-command modem timeout (default: modem.command_timeout config)",
+				Usage: "Per-command modem timeout (default: the configured command timeout, 30s; 5s when it is non-positive)",
 			},
 			&cli.BoolFlag{
 				Name:  "delivery-report",

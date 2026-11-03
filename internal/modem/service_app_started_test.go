@@ -107,6 +107,20 @@ func (m *appStartedModem) respond(w string) [][]byte {
 func newWebhookFixture(t *testing.T) (*webhooks.Service, *webhooks.Repository) {
 	t.Helper()
 
+	service, repo, _, _ := newWebhookFixtureWithStore(t)
+
+	return service, repo
+}
+
+// newWebhookFixtureWithStore is newWebhookFixture plus the persistence it
+// builds: the bun database (with the embedded migrations applied) and the
+// local device service. A test that wires another module onto the SAME
+// database reuses them instead of booting a second persistence graph.
+func newWebhookFixtureWithStore(
+	t *testing.T,
+) (*webhooks.Service, *webhooks.Repository, *bun.DB, *devices.Service) {
+	t.Helper()
+
 	var bunDB *bun.DB
 	app := fx.New(
 		fx.NopLogger,
@@ -173,7 +187,7 @@ func newWebhookFixture(t *testing.T) (*webhooks.Service, *webhooks.Repository) {
 		t.Fatalf("create webhooks service: %v", err)
 	}
 
-	return service, repo
+	return service, repo, bunDB, devicesSvc
 }
 
 // newAppStartedService wires the modem service on a scripted port with the

@@ -86,6 +86,8 @@ func Module() fx.Option {
 				return inbox.Config{
 					ReassemblyTimeout: cfg.Inbox.ReassemblyTimeout,
 					SweepInterval:     cfg.Inbox.SweepInterval,
+					Retention:         cfg.Inbox.Retention,
+					CleanupInterval:   cfg.Inbox.CleanupInterval,
 				}
 			},
 			func(cfg Config) webhooks.Config {

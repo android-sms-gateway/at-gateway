@@ -72,9 +72,10 @@ func resolveModemConfig(t *testing.T) modem.Config {
 }
 
 // TestDefaultInboundAndCmgd pins the built-in defaults of the knobs the inbound
-// SMS path depends on: the inbox reassembly window and eviction sweep, and the
-// modem store-deletion/recovery knobs (a DIFFERENT sweep - see the inbox Config
-// doc comment).
+// SMS path depends on: the inbox reassembly window, eviction sweep and the two
+// RETENTION knobs (a retention WINDOW and a cleanup CADENCE - not sweeps), and
+// the modem store-deletion/recovery knobs (a DIFFERENT sweep - see the inbox
+// Config doc comment).
 func TestDefaultInboundAndCmgd(t *testing.T) {
 	t.Parallel()
 
@@ -85,6 +86,12 @@ func TestDefaultInboundAndCmgd(t *testing.T) {
 	}
 	if got := cfg.Inbox.SweepInterval; got != time.Second {
 		t.Errorf("Default().Inbox.SweepInterval = %v, want 1s", got)
+	}
+	if got := cfg.Inbox.Retention; got != 720*time.Hour {
+		t.Errorf("Default().Inbox.Retention = %v, want 720h (30d)", got)
+	}
+	if got := cfg.Inbox.CleanupInterval; got != 24*time.Hour {
+		t.Errorf("Default().Inbox.CleanupInterval = %v, want 24h", got)
 	}
 	if got := cfg.Modem.Cmgd.RetryAttempts; got != 3 {
 		t.Errorf("Default().Modem.Cmgd.RetryAttempts = %d, want 3", got)
@@ -109,11 +116,16 @@ func TestDefaultInboundAndCmgd(t *testing.T) {
 // including the zero values that disable the reassembly window and the retry
 // loop. The two sweeps are pinned side by side: INBOX__SWEEP_INTERVAL moves
 // the reassembly/dedupe eviction, MODEM__STORE__SWEEP_INTERVAL the modem
-// retained-entry recovery - neither key reaches the other domain.
+// retained-entry recovery - neither key reaches the other domain. The two
+// RETENTION keys (INBOX__RETENTION window, INBOX__CLEANUP_INTERVAL cadence)
+// ride the same binding layer and are pinned beside them, so all four knobs
+// stay unmistakable.
 func TestNewInboundAndCmgdEnvOverridesAndFXBinding(t *testing.T) {
 	t.Setenv("CONFIG_PATH", "")
 	t.Setenv("INBOX__REASSEMBLY_TIMEOUT", "90s")
 	t.Setenv("INBOX__SWEEP_INTERVAL", "2s")
+	t.Setenv("INBOX__RETENTION", "48h")
+	t.Setenv("INBOX__CLEANUP_INTERVAL", "6h")
 	t.Setenv("MODEM__CMGD__RETRY_ATTEMPTS", "5")
 	t.Setenv("MODEM__CMGD__RETRY_BACKOFF", "250ms")
 	t.Setenv("MODEM__STORE__MEMORY", "ME")
@@ -125,6 +137,12 @@ func TestNewInboundAndCmgdEnvOverridesAndFXBinding(t *testing.T) {
 	}
 	if got := inboxCfg.SweepInterval; got != 2*time.Second {
 		t.Errorf("INBOX__SWEEP_INTERVAL bound to %v, want 2s", got)
+	}
+	if got := inboxCfg.Retention; got != 48*time.Hour {
+		t.Errorf("INBOX__RETENTION bound to %v, want 48h", got)
+	}
+	if got := inboxCfg.CleanupInterval; got != 6*time.Hour {
+		t.Errorf("INBOX__CLEANUP_INTERVAL bound to %v, want 6h", got)
 	}
 
 	messagesCfg := resolveMessagesConfig(t)
@@ -235,6 +253,18 @@ func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
 			key:          "INBOX__SWEEP_INTERVAL",
 			documented:   "1s",
 			wantDuration: cfg.Inbox.SweepInterval,
+			wantAttempts: -1,
+		},
+		{
+			key:          "INBOX__RETENTION",
+			documented:   "720h",
+			wantDuration: cfg.Inbox.Retention,
+			wantAttempts: -1,
+		},
+		{
+			key:          "INBOX__CLEANUP_INTERVAL",
+			documented:   "24h",
+			wantDuration: cfg.Inbox.CleanupInterval,
 			wantAttempts: -1,
 		},
 		{

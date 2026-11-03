@@ -174,7 +174,164 @@ DELETE {{baseURL}}/api/v1/webhooks/does-not-exist HTTP/1.1
 Authorization: Basic sms:{{basicPassword}}
 
 # ============================================================
-# 6. AUTH
+# 6. INBOX
+# ============================================================
+
+###
+# List the stored incoming messages; array of IncomingMessage wire objects,
+# total count in X-Total-Count
+GET {{baseURL}}/api/v1/inbox HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Filter by type (SMS | DATA_SMS | MMS | MMS_DOWNLOADED); the types this
+# gateway never stores match no rows
+GET {{baseURL}}/api/v1/inbox?type=SMS HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Paginate; the body holds at most limit rows, X-Total-Count the full total
+GET {{baseURL}}/api/v1/inbox?limit=1&offset=0 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Date range: from is inclusive, to is exclusive; an omitted to is unbounded
+GET {{baseURL}}/api/v1/inbox?from=2026-10-22T00:00:00Z&to=2026-10-23T00:00:00Z HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# The local device id -> 200
+GET {{baseURL}}/api/v1/inbox?deviceId={{deviceID}} HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# A foreign device id -> 400
+# {"message":"list inbox messages: device not found: \"000000000000000000000\"","code":400}
+GET {{baseURL}}/api/v1/inbox?deviceId=000000000000000000000 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# limit below the minimum -> 400
+GET {{baseURL}}/api/v1/inbox?limit=0 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# limit above the maximum -> 400
+GET {{baseURL}}/api/v1/inbox?limit=501 HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# An unknown type -> 400
+GET {{baseURL}}/api/v1/inbox?type=BOGUS HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# from after to -> 400
+GET {{baseURL}}/api/v1/inbox?from=2026-10-23T00:00:00Z&to=2026-10-22T00:00:00Z HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Without credentials -> 401
+GET {{baseURL}}/api/v1/inbox HTTP/1.1
+
+# --- Refresh ---
+
+###
+# Replay the stored window as inbound webhooks -> 202 with body "Accepted"
+# (text/plain, server parity). SYNCHRONOUS and NOT bounded by a row count:
+# the duration is proportional to the requested window. `messageTypes` values
+# are matched EXACTLY against the stored type (omitted defaults to SMS); only
+# SMS and MMS can be named here, so DATA_SMS rows are listable but NOT
+# replayable over HTTP.
+# @name postInboxRefresh
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Individual"}
+
+###
+# Disabled -> 202, zero emissions
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Disabled"}
+
+###
+# Delivery DEFAULT: neither webhookDelivery nor triggerWebhooks in the body ->
+# 202 and NOTHING is emitted (delivery resolves to Disabled)
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z"}
+
+###
+# Batch -> 400 {"message":"refresh inbox messages: batch delivery not supported","code":400}
+# (this gateway has no batch inbound emitters)
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Batch"}
+
+###
+# NEGATIVE DATA_SMS case (exact matching): delivery is Individual (via the
+# deprecated triggerWebhooks=true) but messageTypes is OMITTED -> default
+# [SMS], so a stored DATA_SMS row in the window is NOT replayed; expect 202
+# and no sms:data-received event for it
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","triggerWebhooks":true}
+
+###
+# NEGATIVE DATA_SMS case (exact matching): an explicit ["SMS"] also does NOT
+# replay a stored DATA_SMS row - no grouping SMS -> DATA_SMS, no expansion
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","messageTypes":["SMS"],"webhookDelivery":"Individual"}
+
+###
+# A literal DATA_SMS value -> 400 (validation failed MessageTypes oneof):
+# the pinned validator accepts only SMS and MMS; DATA_SMS rows cannot be
+# replayed over HTTP
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","messageTypes":["DATA_SMS"],"webhookDelivery":"Individual"}
+
+###
+# A foreign deviceId -> 400
+# {"message":"refresh inbox messages: device not found: \"000000000000000000000\"","code":400}
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","deviceId":"000000000000000000000","webhookDelivery":"Individual"}
+
+###
+# since after until -> 400 (the pinned DTO validator: ltefield/gtefield)
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"since":"2026-10-23T00:00:00Z","until":"2026-10-22T00:00:00Z","webhookDelivery":"Individual"}
+
+###
+# Without credentials -> 401
+POST {{baseURL}}/api/v1/inbox/refresh HTTP/1.1
+Content-Type: application/json
+
+{"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Individual"}
+
+# ============================================================
+# 7. AUTH
 # ============================================================
 
 ###

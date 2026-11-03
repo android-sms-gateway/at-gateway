@@ -70,9 +70,14 @@ type messagesConfig struct {
 // inboxConfig is the inbound SMS pipeline configuration (internal/inbox). Its
 // sweep_interval is the reassembly/dedupe EVICTION cadence - a DIFFERENT knob
 // from modem.store.sweep_interval, the modem retained-entry RECOVERY sweep.
+// retention is the age-based retention WINDOW of the stored rows and
+// cleanup_interval its CADENCE: neither is a sweep, and both are distinct from
+// the two sweep keys above.
 type inboxConfig struct {
 	ReassemblyTimeout time.Duration `koanf:"reassembly_timeout"`
 	SweepInterval     time.Duration `koanf:"sweep_interval"`
+	Retention         time.Duration `koanf:"retention"`
+	CleanupInterval   time.Duration `koanf:"cleanup_interval"`
 }
 
 type webhooksConfig struct {
@@ -165,6 +170,11 @@ func Default() Config {
 			// The reassembly/dedupe eviction cadence; it deliberately decouples
 			// inbound eviction from Messages.PollInterval.
 			SweepInterval: time.Second,
+			// Age-based retention WINDOW of the stored rows and the CADENCE of
+			// its cleanup - mirrors the server's inbox:cleanup task (30d/24h);
+			// neither is a sweep knob.
+			Retention:       720 * time.Hour,
+			CleanupInterval: 24 * time.Hour,
 		},
 		Webhooks: webhooksConfig{
 			RetryCount: 15,
