@@ -43,6 +43,7 @@ func newInboundFixture(
 		repo,
 		devicesSvc,
 		storageSvc,
+		newSettingsFacade(bunDB, config),
 		newTestMetrics(),
 		zap.NewNop(),
 	)

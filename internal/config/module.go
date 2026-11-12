@@ -20,7 +20,6 @@ import (
 // Module returns the fx module providing the configuration and the per-domain
 // config bindings consumed by the other modules.
 func Module() fx.Option {
-	//nolint:mnd //default values
 	return fx.Module(
 		"config",
 		fx.Provide(New, fx.Private),
@@ -40,85 +39,92 @@ func Module() fx.Option {
 				}
 			},
 		),
-		fx.Provide(
-			func(cfg Config) modem.Config {
-				return modem.Config{
-					Port:           cfg.Modem.Port,
-					BaudRate:       cfg.Modem.BaudRate,
-					InitTimeout:    cfg.Modem.InitTimeout,
-					CommandTimeout: cfg.Modem.CommandTimeout,
-					Cmgd: modem.CmgdConfig{
-						RetryAttempts: cfg.Modem.Cmgd.RetryAttempts,
-						RetryBackoff:  cfg.Modem.Cmgd.RetryBackoff,
-					},
-					Store: modem.StoreConfig{
-						Memory:        cfg.Modem.Store.Memory,
-						SweepInterval: cfg.Modem.Store.SweepInterval,
-					},
-				}
-			},
-			func(cfg Config) storage.Config {
-				return storage.Config{
-					Path: cfg.Storage.Path,
-				}
-			},
-			func(cfg Config) auth.Config {
-				return auth.Config{
-					Basic: auth.BasicConfig{
-						Username: cfg.Auth.Basic.Username,
-						Password: cfg.Auth.Basic.Password,
-					},
-				}
-			},
-			func(cfg Config) devices.Config {
-				return devices.Config{
-					Name: cfg.Device.Name,
-				}
-			},
-			func(cfg Config) messages.Config {
-				return messages.Config{
-					PollInterval:  cfg.Messages.PollInterval,
-					MaxSegments:   cfg.Messages.MaxSegments,
-					DefaultRegion: cfg.Messages.DefaultRegion,
-				}
-			},
-			func(cfg Config) inbox.Config {
-				return inbox.Config{
-					ReassemblyTimeout: cfg.Inbox.ReassemblyTimeout,
-					SweepInterval:     cfg.Inbox.SweepInterval,
-					Retention:         cfg.Inbox.Retention,
-					CleanupInterval:   cfg.Inbox.CleanupInterval,
-				}
-			},
-			func(cfg Config) webhooks.Config {
-				return webhooks.Config{
-					RetryCount: cfg.Webhooks.RetryCount,
-					SigningKey: cfg.Webhooks.SigningKey,
-					Queue: webhooks.QueueConfig{
-						BatchSize:              cfg.Webhooks.Queue.BatchSize,
-						RequestTimeout:         cfg.Webhooks.Queue.RequestTimeout,
-						DialTimeout:            cfg.Webhooks.Queue.DialTimeout,
-						RetryBaseDelay:         cfg.Webhooks.Queue.RetryBaseDelay,
-						IdleDelay:              cfg.Webhooks.Queue.IdleDelay,
-						StuckProcessingTimeout: cfg.Webhooks.Queue.StuckProcessingTimeout,
-						CleanupRetention:       cfg.Webhooks.Queue.CleanupRetention,
-					},
-				}
-			},
-			func(cfg Config) ping.Config {
-				return ping.Config{
-					Interval: cfg.Ping.Interval,
-				}
-			},
-			func(cfg Config) sqlfx.Config {
-				return sqlfx.Config{
-					URL:             cfg.Database.URL,
-					ConnMaxIdleTime: 20 * time.Minute,
-					ConnMaxLifetime: time.Hour,
-					MaxOpenConns:    1,
-					MaxIdleConns:    1,
-				}
-			},
-		),
+		domainBindings(),
+	)
+}
+
+// domainBindings maps the effective Config onto each business module's typed
+// Config struct.
+func domainBindings() fx.Option {
+	//nolint:mnd //default values
+	return fx.Provide(
+		func(cfg Config) modem.Config {
+			return modem.Config{
+				Port:           cfg.Modem.Port,
+				BaudRate:       cfg.Modem.BaudRate,
+				InitTimeout:    cfg.Modem.InitTimeout,
+				CommandTimeout: cfg.Modem.CommandTimeout,
+				Cmgd: modem.CmgdConfig{
+					RetryAttempts: cfg.Modem.Cmgd.RetryAttempts,
+					RetryBackoff:  cfg.Modem.Cmgd.RetryBackoff,
+				},
+				Store: modem.StoreConfig{
+					Memory:        cfg.Modem.Store.Memory,
+					SweepInterval: cfg.Modem.Store.SweepInterval,
+				},
+			}
+		},
+		func(cfg Config) storage.Config {
+			return storage.Config{
+				Path: cfg.Storage.Path,
+			}
+		},
+		func(cfg Config) auth.Config {
+			return auth.Config{
+				Basic: auth.BasicConfig{
+					Username: cfg.Auth.Basic.Username,
+					Password: cfg.Auth.Basic.Password,
+				},
+			}
+		},
+		func(cfg Config) devices.Config {
+			return devices.Config{
+				Name: cfg.Device.Name,
+			}
+		},
+		func(cfg Config) messages.Config {
+			return messages.Config{
+				PollInterval:  cfg.Messages.PollInterval,
+				MaxSegments:   cfg.Messages.MaxSegments,
+				DefaultRegion: cfg.Messages.DefaultRegion,
+			}
+		},
+		func(cfg Config) inbox.Config {
+			return inbox.Config{
+				ReassemblyTimeout: cfg.Inbox.ReassemblyTimeout,
+				SweepInterval:     cfg.Inbox.SweepInterval,
+				Retention:         cfg.Inbox.Retention,
+				CleanupInterval:   cfg.Inbox.CleanupInterval,
+			}
+		},
+		func(cfg Config) webhooks.Config {
+			return webhooks.Config{
+				RetryCount: cfg.Webhooks.RetryCount,
+				SigningKey: cfg.Webhooks.SigningKey,
+				Queue: webhooks.QueueConfig{
+					BatchSize:              cfg.Webhooks.Queue.BatchSize,
+					RequestTimeout:         cfg.Webhooks.Queue.RequestTimeout,
+					DialTimeout:            cfg.Webhooks.Queue.DialTimeout,
+					RetryBaseDelay:         cfg.Webhooks.Queue.RetryBaseDelay,
+					IdleDelay:              cfg.Webhooks.Queue.IdleDelay,
+					StuckProcessingTimeout: cfg.Webhooks.Queue.StuckProcessingTimeout,
+					CleanupRetention:       cfg.Webhooks.Queue.CleanupRetention,
+				},
+			}
+		},
+		func(cfg Config) ping.Config {
+			return ping.Config{
+				Interval: cfg.Ping.Interval,
+			}
+		},
+		func(cfg Config) sqlfx.Config {
+			return sqlfx.Config{
+				URL:             cfg.Database.URL,
+				ConnMaxIdleTime: 20 * time.Minute,
+				ConnMaxLifetime: time.Hour,
+				MaxOpenConns:    1,
+				MaxIdleConns:    1,
+			}
+		},
 	)
 }

@@ -678,7 +678,7 @@ const docTemplate = `{
                     "200": {
                         "description": "Settings updated",
                         "schema": {
-                            "type": "object"
+                            "$ref": "#/definitions/smsgateway.DeviceSettings"
                         }
                     },
                     "400": {
@@ -735,7 +735,7 @@ const docTemplate = `{
                     "200": {
                         "description": "Settings updated",
                         "schema": {
-                            "type": "object"
+                            "$ref": "#/definitions/smsgateway.DeviceSettings"
                         }
                     },
                     "400": {

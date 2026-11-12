@@ -13,6 +13,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/ping"
 	"github.com/android-sms-gateway/at-gateway/internal/server"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/go-core-fx/bunfx"
@@ -74,6 +75,7 @@ func run(ctx context.Context, version healthfx.Version) error {
 		devices.Module(),
 		webhooks.Module(true),
 		ping.Module(true),
+		settings.Module(),
 		fx.Supply(version),
 
 		fx.Invoke(func(lc fx.Lifecycle, logger *zap.Logger) {

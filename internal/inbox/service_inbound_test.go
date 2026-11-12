@@ -13,6 +13,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/inbox"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -53,23 +54,25 @@ func newInboundFixture(t *testing.T, config inbox.Config) inboundFixture {
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 
 	metrics := inbox.NewTestMetrics(prometheus.NewRegistry())
-	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{
-			SigningKey: "messages-inbound-test-key",
-			RetryCount: 0,
-			Queue: webhooks.QueueConfig{
-				BatchSize:              0,
-				RequestTimeout:         0,
-				DialTimeout:            0,
-				RetryBaseDelay:         0,
-				IdleDelay:              0,
-				StuckProcessingTimeout: 0,
-				CleanupRetention:       0,
-			},
+	webhooksConfig := webhooks.Config{
+		SigningKey: "messages-inbound-test-key",
+		RetryCount: 0,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
 		},
+	}
+	webhooksSvc, err := webhooks.NewService(
+		webhooksConfig,
 		webhooks.NewRepository(bunDB),
 		devicesSvc,
 		storageSvc,
+		webhooks.NewSettings(settings.Scoped(settings.NewRepository(bunDB), "webhooks"), webhooksConfig),
 		nil,
 		zap.NewNop(),
 	)

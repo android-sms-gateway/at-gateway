@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/uptrace/bun"
@@ -62,7 +63,15 @@ func newRunFixture(t *testing.T, config webhooks.Config) runFixture {
 
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 	metrics := newTestMetrics()
-	service, err := webhooks.NewService(config, repo, devicesSvc, storageSvc, metrics, zap.NewNop())
+	service, err := webhooks.NewService(
+		config,
+		repo,
+		devicesSvc,
+		storageSvc,
+		newSettingsFacade(db, config),
+		metrics,
+		zap.NewNop(),
+	)
 	if err != nil {
 		t.Fatalf("create webhooks service: %v", err)
 	}
@@ -608,5 +617,85 @@ func TestRetryDelayIsExponential(t *testing.T) {
 		if got := webhooks.RetryDelayForTest(base, retryCount); got != want {
 			t.Errorf("retry delay for count %d = %s, want %s", retryCount, got, want)
 		}
+	}
+}
+
+// TestRetryDelayIsCapped pins the overflow guard: a large stored retry count
+// saturates at the capped shift instead of shifting [time.Duration] into zero
+// or a negative delay.
+func TestRetryDelayIsCapped(t *testing.T) {
+	t.Parallel()
+
+	base := 7 * time.Millisecond
+	want := base << 16
+	for _, retryCount := range []int{16, 39, 64, 1 << 30} {
+		if got := webhooks.RetryDelayForTest(base, retryCount); got != want {
+			t.Errorf("retry delay for count %d = %s, want %s (capped)", retryCount, got, want)
+		}
+	}
+}
+
+// TestRun_StoredRetryCountOverridesConfig pins the startup read: the worker
+// takes the stored retry count when it starts, so a stored 0 stops at the
+// first failed attempt even though the configured default allows one retry.
+func TestRun_StoredRetryCountOverridesConfig(t *testing.T) {
+	t.Parallel()
+
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
+	server := newRequestServer(t, log, func(int) int { return http.StatusInternalServerError }, nil)
+	fixture := newRunFixture(t, runConfig(1))
+
+	if err := settings.NewRepository(fixture.db).Set(context.Background(), "webhooks.retry_count", "0"); err != nil {
+		t.Fatalf("seed stored retry count: %v", err)
+	}
+	now := time.Now().UTC()
+	enqueueRunItem(t, fixture, "stored-retry", server.URL, now.Add(-time.Hour), now.Add(-time.Hour))
+
+	worker := startWorker(t, fixture.service)
+	waitForStatus(t, fixture, "stored-retry", webhooks.QueueStatusPermanentlyFailed)
+	worker.stop(t)
+
+	if got := len(log.snapshot()); got != 1 {
+		t.Fatalf("POST count = %d, want 1 (stored retry 0 beats configured 1)", got)
+	}
+}
+
+// TestRun_StoredSigningKeyOverridesConfig pins the startup read: the worker
+// signs with the stored key when a row is set; the configured key only
+// applies when the row is absent (pinned by TestRun_DeliversStoredEnvelopeAndSignsEveryPost).
+func TestRun_StoredSigningKeyOverridesConfig(t *testing.T) {
+	t.Parallel()
+
+	const storedKey = "stored-worker-key"
+	log := &requestLog{
+		mu:       sync.Mutex{},
+		requests: []capturedRequest{},
+	}
+	server := newRequestServer(t, log, func(int) int { return http.StatusOK }, nil)
+	fixture := newRunFixture(t, runConfig(1))
+
+	if err := settings.NewRepository(fixture.db).
+		Set(context.Background(), "webhooks.signing_key", storedKey); err != nil {
+		t.Fatalf("seed stored signing key: %v", err)
+	}
+	now := time.Now().UTC()
+	enqueueRunItem(t, fixture, "stored-key", server.URL, now.Add(-time.Hour), now.Add(-time.Hour))
+
+	worker := startWorker(t, fixture.service)
+	waitForStatus(t, fixture, "stored-key", webhooks.QueueStatusCompleted)
+	worker.stop(t)
+
+	requests := log.snapshot()
+	if len(requests) != 1 {
+		t.Fatalf("POST count = %d, want 1", len(requests))
+	}
+	mac := hmac.New(sha256.New, []byte(storedKey))
+	_, _ = mac.Write(requests[0].body)
+	_, _ = mac.Write([]byte(requests[0].timestamp))
+	if want := hex.EncodeToString(mac.Sum(nil)); requests[0].signature != want {
+		t.Errorf("POST signature = %q, want %q (stored key)", requests[0].signature, want)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/db"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	apiwebhooks "github.com/android-sms-gateway/at-gateway/internal/server/api/webhooks"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -37,7 +38,7 @@ const (
 // newPersistence boots the full persistence graph against an in-memory SQLite
 // database so embedded migrations (incl. the webhooks registry) apply before
 // the repository is used.
-func newPersistence(t *testing.T) *webhooks.Repository {
+func newPersistence(t *testing.T) (*webhooks.Repository, *bun.DB) {
 	t.Helper()
 
 	var bunDB *bun.DB
@@ -75,7 +76,7 @@ func newPersistence(t *testing.T) *webhooks.Repository {
 		}
 	})
 
-	return webhooks.NewRepository(bunDB)
+	return webhooks.NewRepository(bunDB), bunDB
 }
 
 // newHandlerApp boots the webhooks handler the way module.go wires it: the
@@ -87,7 +88,7 @@ func newPersistence(t *testing.T) *webhooks.Repository {
 func newHandlerApp(t *testing.T) (*fiber.App, *devices.Service) {
 	t.Helper()
 
-	repo := newPersistence(t)
+	repo, bunDB := newPersistence(t)
 
 	storageSvc, err := storage.NewService(
 		storage.Config{Path: filepath.Join(t.TempDir(), "storage.json")},
@@ -98,23 +99,25 @@ func newHandlerApp(t *testing.T) (*fiber.App, *devices.Service) {
 	}
 
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
-	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{
-			SigningKey: "webhooks-handler-test-key",
-			RetryCount: 0,
-			Queue: webhooks.QueueConfig{
-				BatchSize:              0,
-				RequestTimeout:         0,
-				DialTimeout:            0,
-				RetryBaseDelay:         0,
-				IdleDelay:              0,
-				StuckProcessingTimeout: 0,
-				CleanupRetention:       0,
-			},
+	webhooksConfig := webhooks.Config{
+		SigningKey: "webhooks-handler-test-key",
+		RetryCount: 0,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
 		},
+	}
+	webhooksSvc, err := webhooks.NewService(
+		webhooksConfig,
 		repo,
 		devicesSvc,
 		storageSvc,
+		webhooks.NewSettings(settings.Scoped(settings.NewRepository(bunDB), "webhooks"), webhooksConfig),
 		nil,
 		zap.NewNop(),
 	)
