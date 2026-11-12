@@ -18,6 +18,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/db"
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/ping"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -63,7 +64,7 @@ func TestRun_OneEnvelopePerWebhookPerTick(t *testing.T) {
 		}
 	}
 
-	pingSvc := startPingService(t, svc, interval)
+	pingSvc := startPingService(t, svc, bunDB, interval)
 	waitForQueueRows(t, bunDB, 2)
 
 	if got := countQueueRows(t, bunDB); got != 2 {
@@ -94,7 +95,7 @@ func TestRun_TicksRepeatedlyAndEmitsOnlyPingEnvelopes(t *testing.T) {
 		t.Fatalf("replace webhook: %v", err)
 	}
 
-	pingSvc := startPingService(t, svc, interval)
+	pingSvc := startPingService(t, svc, bunDB, interval)
 	waitForQueueRows(t, bunDB, 3)
 	pingSvc.stop(t)
 
@@ -160,7 +161,7 @@ func TestRun_NonPositiveIntervalDisablesEmission(t *testing.T) {
 				t.Fatalf("replace webhook: %v", err)
 			}
 
-			pingSvc := startPingService(t, svc, tt.interval)
+			pingSvc := startPingService(t, svc, bunDB, tt.interval)
 			pingSvc.stop(t)
 
 			if got := countQueueRows(t, bunDB); got != 0 {
@@ -194,7 +195,7 @@ func TestRun_PostsOneSignedEnvelopePerTick(t *testing.T) {
 	}
 
 	worker := startWorker(t, svc)
-	pingSvc := startPingService(t, svc, interval)
+	pingSvc := startPingService(t, svc, bunDB, interval)
 	waitForPostCount(t, log, 3)
 
 	// Stop the ticker first, then let the delivery worker finish what it has
@@ -256,6 +257,7 @@ func newPingFixture(t *testing.T, config webhooks.Config) (*webhooks.Service, *b
 		webhooks.NewRepository(bunDB),
 		devicesSvc,
 		storageSvc,
+		webhooks.NewSettings(settings.Scoped(settings.NewRepository(bunDB), "webhooks"), config),
 		newPingMetrics(),
 		zap.NewNop(),
 	)
@@ -382,11 +384,13 @@ type pingHandle struct {
 }
 
 // startPingService runs the ticker the way fx does: in its own goroutine,
-// cancelled through the context.
-func startPingService(t *testing.T, service *webhooks.Service, interval time.Duration) *pingHandle {
+// cancelled through the context. The settings facade reads the stored rows
+// from db at Run start, the way fx wires it in the real composition.
+func startPingService(t *testing.T, service *webhooks.Service, db *bun.DB, interval time.Duration) *pingHandle {
 	t.Helper()
 
-	pingSvc := ping.NewService(pingConfig(interval), service, zap.NewNop())
+	pingSettings := ping.NewSettings(settings.Scoped(settings.NewRepository(db), "ping"), pingConfig(interval))
+	pingSvc := ping.NewService(pingSettings, service, zap.NewNop())
 	ctx, cancel := context.WithCancel(context.Background())
 	handle := &pingHandle{
 		cancel: cancel,
@@ -616,5 +620,30 @@ func waitForPostCount(t *testing.T, log *requestLog, want int) {
 			t.Fatalf("POST count = %d, want at least %d", len(log.snapshot()), want)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestRun_StoredIntervalOverridesConfig pins the startup read: the ticker
+// takes the stored interval when it starts, so a stored 0 (disabled) returns
+// immediately even though the configured interval would tick.
+func TestRun_StoredIntervalOverridesConfig(t *testing.T) {
+	t.Parallel()
+
+	svc, bunDB := newPingFixture(t, registryConfig())
+	if err := settings.Scoped(settings.NewRepository(bunDB), "ping").
+		Set(context.Background(), "interval_seconds", "0"); err != nil {
+		t.Fatalf("seed stored interval: %v", err)
+	}
+
+	pingSvc := ping.NewService(
+		ping.NewSettings(
+			settings.Scoped(settings.NewRepository(bunDB), "ping"),
+			pingConfig(20*time.Millisecond),
+		),
+		svc,
+		zap.NewNop(),
+	)
+	if err := pingSvc.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
 }

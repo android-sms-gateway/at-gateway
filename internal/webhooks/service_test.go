@@ -9,14 +9,23 @@ import (
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 )
 
 const testFixtureSigningKey = "webhooks-test-key"
+
+// newSettingsFacade builds the module settings facade over the test
+// database: an empty settings table unless a test seeds rows, so Run keeps
+// the configured defaults.
+func newSettingsFacade(db *bun.DB, config webhooks.Config) *webhooks.Settings {
+	return webhooks.NewSettings(settings.Scoped(settings.NewRepository(db), "webhooks"), config)
+}
 
 // newService builds the T1 persistence graph (see newPersistence) plus the
 // storage-backed devices service, then returns a registry-only
@@ -45,7 +54,7 @@ func newServiceFixture(
 ) (*webhooks.Service, *devices.Service, *webhooks.Repository) {
 	t.Helper()
 
-	repo, _, _ := newPersistence(t)
+	repo, _, db := newPersistence(t)
 
 	storageSvc, err := storage.NewService(
 		storage.Config{Path: filepath.Join(t.TempDir(), "storage.json")},
@@ -57,7 +66,15 @@ func newServiceFixture(
 
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
 	metrics := newTestMetrics()
-	service, err := webhooks.NewService(config, repo, devicesSvc, storageSvc, metrics, zap.NewNop())
+	service, err := webhooks.NewService(
+		config,
+		repo,
+		devicesSvc,
+		storageSvc,
+		newSettingsFacade(db, config),
+		metrics,
+		zap.NewNop(),
+	)
 	if err != nil {
 		t.Fatalf("create webhooks service: %v", err)
 	}

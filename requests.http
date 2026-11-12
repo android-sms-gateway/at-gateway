@@ -331,7 +331,83 @@ Content-Type: application/json
 {"since":"2026-10-22T00:00:00Z","until":"2026-10-23T00:00:00Z","webhookDelivery":"Individual"}
 
 # ============================================================
-# 7. AUTH
+# 7. SETTINGS
+# ============================================================
+
+###
+# Effective settings: stored rows override the configured defaults; only the
+# sections this gateway honors are present (ping, webhooks); the webhook
+# signing key is write-only and never echoed
+# expect 200 {"ping":{"interval_seconds":60},"webhooks":{"retry_count":15}}
+GET {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+
+###
+# Without credentials -> 401
+GET {{baseURL}}/api/v1/settings HTTP/1.1
+
+###
+# Partial update -> 200, body = effective view (same as GET)
+# expect 200 {"ping":{"interval_seconds":60},"webhooks":{"retry_count":7}}
+PATCH {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"webhooks":{"retry_count":7}}
+
+###
+# Replace: unprovided keys fall back to the configured defaults (their rows
+# are removed) - here retry 7 from the PATCH above is reset to 15
+# expect 200 {"ping":{"interval_seconds":30},"webhooks":{"retry_count":15}}
+PUT {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"ping":{"interval_seconds":30}}
+
+###
+# Unknown section (messages is not honored here) -> 200, silently dropped;
+# the honored sibling still applies
+# expect 200, no "messages" key in the response
+PATCH {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"messages":{"send_interval_min":1},"ping":{"interval_seconds":45}}
+
+###
+# interval_seconds below 1 -> 400 (client-go DTO validator tag at the
+# edge; the ping section repeats the rule as defense)
+# expect 400
+PUT {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"ping":{"interval_seconds":0}}
+
+###
+# signing_key write -> 400 INTERIM: client-go's omitempty,isdefault tag
+# rejects every non-empty value under DecorateWithBodyEx; the client-go tag
+# fix is pending (owner decision). The key stays write-only either way -
+# never echoed back
+# expect 400 until the client-go fix; GET afterwards -> still without it
+PATCH {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{"webhooks":{"signing_key":"example-key"}}
+
+###
+# Empty replace -> 200, everything back to the configured defaults
+# expect 200 {"ping":{"interval_seconds":60},"webhooks":{"retry_count":15}}
+PUT {{baseURL}}/api/v1/settings HTTP/1.1
+Authorization: Basic sms:{{basicPassword}}
+Content-Type: application/json
+
+{}
+
+# ============================================================
+# 8. AUTH
 # ============================================================
 
 ###

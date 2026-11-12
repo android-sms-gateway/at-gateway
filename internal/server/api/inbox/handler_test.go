@@ -20,6 +20,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	apiinbox "github.com/android-sms-gateway/at-gateway/internal/server/api/inbox"
 	"github.com/android-sms-gateway/at-gateway/internal/server/middlewares/userauth"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -107,23 +108,25 @@ func newHandlerFixture(t *testing.T) handlerFixture {
 	}
 
 	webhooksRepo := webhooks.NewRepository(bunDB)
-	webhooksSvc, err := webhooks.NewService(
-		webhooks.Config{
-			SigningKey: "inbox-handler-test-key",
-			RetryCount: 0,
-			Queue: webhooks.QueueConfig{
-				BatchSize:              0,
-				RequestTimeout:         0,
-				DialTimeout:            0,
-				RetryBaseDelay:         0,
-				IdleDelay:              0,
-				StuckProcessingTimeout: 0,
-				CleanupRetention:       0,
-			},
+	webhooksConfig := webhooks.Config{
+		SigningKey: "inbox-handler-test-key",
+		RetryCount: 0,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
 		},
+	}
+	webhooksSvc, err := webhooks.NewService(
+		webhooksConfig,
 		webhooksRepo,
 		devicesSvc,
 		storageSvc,
+		webhooks.NewSettings(settings.Scoped(settings.NewRepository(bunDB), "webhooks"), webhooksConfig),
 		nil,
 		zap.NewNop(),
 	)

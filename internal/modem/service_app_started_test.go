@@ -13,6 +13,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/modem"
 	"github.com/android-sms-gateway/at-gateway/internal/modem/port"
+	"github.com/android-sms-gateway/at-gateway/internal/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/storage"
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
 	"github.com/android-sms-gateway/client-go/smsgateway"
@@ -163,23 +164,25 @@ func newWebhookFixtureWithStore(
 		t.Fatalf("create storage service: %v", err)
 	}
 	devicesSvc := devices.NewService(devices.Config{Name: "test-device"}, storageSvc, zap.NewNop())
-	service, err := webhooks.NewService(
-		webhooks.Config{
-			SigningKey: "modem-app-started-test-key",
-			RetryCount: 0,
-			Queue: webhooks.QueueConfig{
-				BatchSize:              0,
-				RequestTimeout:         0,
-				DialTimeout:            0,
-				RetryBaseDelay:         0,
-				IdleDelay:              0,
-				StuckProcessingTimeout: 0,
-				CleanupRetention:       0,
-			},
+	webhooksConfig := webhooks.Config{
+		SigningKey: "modem-app-started-test-key",
+		RetryCount: 0,
+		Queue: webhooks.QueueConfig{
+			BatchSize:              0,
+			RequestTimeout:         0,
+			DialTimeout:            0,
+			RetryBaseDelay:         0,
+			IdleDelay:              0,
+			StuckProcessingTimeout: 0,
+			CleanupRetention:       0,
 		},
+	}
+	service, err := webhooks.NewService(
+		webhooksConfig,
 		repo,
 		devicesSvc,
 		storageSvc,
+		webhooks.NewSettings(settings.Scoped(settings.NewRepository(bunDB), "webhooks"), webhooksConfig),
 		nil,
 		zap.NewNop(),
 	)

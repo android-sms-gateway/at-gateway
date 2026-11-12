@@ -6,6 +6,7 @@ import (
 	"github.com/android-sms-gateway/at-gateway/internal/server/api/devices"
 	"github.com/android-sms-gateway/at-gateway/internal/server/api/inbox"
 	"github.com/android-sms-gateway/at-gateway/internal/server/api/messages"
+	"github.com/android-sms-gateway/at-gateway/internal/server/api/settings"
 	"github.com/android-sms-gateway/at-gateway/internal/server/api/webhooks"
 	"github.com/android-sms-gateway/at-gateway/internal/server/docs"
 	"github.com/android-sms-gateway/at-gateway/internal/server/middlewares/userauth"
@@ -44,6 +45,7 @@ func Module() fx.Option {
 			fx.Annotate(devices.NewHandler, fx.ResultTags(`group:"handlers"`)),
 			fx.Annotate(inbox.NewHandler, fx.ResultTags(`group:"handlers"`)),
 			fx.Annotate(messages.NewHandler, fx.ResultTags(`group:"handlers"`)),
+			fx.Annotate(settings.NewHandler, fx.ResultTags(`group:"handlers"`)),
 			fx.Annotate(webhooks.NewHandler, fx.ResultTags(`group:"handlers"`)),
 			fx.Private,
 		),

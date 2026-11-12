@@ -29,20 +29,24 @@ type Service struct {
 	webhooks   *Repository
 	devicesSvc *devices.Service
 	storageSvc *storage.Service
+	settings   *Settings
 
 	metrics *Metrics
 	logger  *zap.Logger
 
 	signingKey string
+	retryCount int
 }
 
 // NewService wires the registry and emission service with its configuration,
-// repository, device authority, persistent key-value storage, metrics and logger.
+// repository, device authority, persistent key-value storage, module
+// settings, metrics and logger.
 func NewService(
 	config Config,
 	webhooks *Repository,
 	devicesSvc *devices.Service,
 	storageSvc *storage.Service,
+	settings *Settings,
 	metrics *Metrics,
 	logger *zap.Logger,
 ) (*Service, error) {
@@ -51,9 +55,11 @@ func NewService(
 		webhooks:   webhooks,
 		devicesSvc: devicesSvc,
 		storageSvc: storageSvc,
+		settings:   settings,
 		metrics:    metrics,
 		logger:     logger,
 		signingKey: "",
+		retryCount: config.RetryCount,
 	}, nil
 }
 
@@ -225,18 +231,57 @@ func (s *Service) enqueue(
 	return nil
 }
 
-// Run is the single webhook queue delivery goroutine. It recovers stale
-// claims, processes due items sequentially and returns when ctx is canceled.
+// Run loads the stored settings once, at start - migrations have run by then,
+// and a settings write requires a restart to be applied - then drives the
+// queue worker until ctx is canceled. A read failure aborts the app rather
+// than running on defaults the API already confirmed as written; a shutdown
+// that interrupts the read stops cleanly with nil.
 func (s *Service) Run(ctx context.Context) error {
-	s.signingKey = s.config.SigningKey
+	retryCount, signingKey, err := s.loadSettings(ctx)
+	if err != nil && ctx.Err() == nil {
+		return fmt.Errorf("load stored settings: %w", err)
+	}
+	if ctx.Err() == nil {
+		return s.runQueue(ctx, retryCount, signingKey)
+	}
+
+	return nil
+}
+
+// loadSettings reads the stored retry count and signing key through the
+// module facade in one place, so the worker resolves its settings exactly
+// once per start.
+func (s *Service) loadSettings(ctx context.Context) (int, string, error) {
+	retryCount, err := s.settings.RetryCount(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+
+	signingKey, err := s.settings.SigningKey(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+
+	return retryCount, signingKey, nil
+}
+
+// runQueue applies the resolved settings to the worker fields, then recovers
+// stale claims, processes due items sequentially and returns when ctx is
+// canceled. The signing key precedence is stored-or-configured key, storage
+// key, generated-and-persisted - an empty resolved key only ever falls
+// through the chain.
+func (s *Service) runQueue(ctx context.Context, retryCount int, signingKey string) error {
+	s.retryCount = retryCount
+
+	s.signingKey = signingKey
 	if s.signingKey == "" {
 		// storage.Get is value-only, so a read failure is indistinguishable from
 		// an absent value; fall through to generation and surface any Set failure.
 		s.signingKey = s.storageSvc.Get(signingKeyStorageKey)
 		if s.signingKey == "" {
 			s.signingKey = gonanoid.Must(signingKeyLength)
-			if err := s.storageSvc.Set(signingKeyStorageKey, s.signingKey); err != nil {
-				return fmt.Errorf("resolve webhook signing key: %w", err)
+			if setErr := s.storageSvc.Set(signingKeyStorageKey, s.signingKey); setErr != nil {
+				return fmt.Errorf("resolve webhook signing key: %w", setErr)
 			}
 		}
 	}
@@ -351,10 +396,15 @@ func signPayload(key, body, timestamp string) string {
 }
 
 func retryDelay(base time.Duration, retryCount int) time.Duration {
+	// maxRetryShift caps the exponent so a large stored retry count cannot shift
+	// the delay to zero or a negative value; a shift of 16 on any sane base stays
+	// far below the [time.Duration] overflow point.
+	const maxRetryShift = 16
+
 	if retryCount < 0 {
 		return 0
 	}
-	return base << retryCount
+	return base << min(retryCount, maxRetryShift)
 }
 
 func (s *Service) markDeliveryFailure(ctx context.Context, item QueueItem, deliveryErr error) {
@@ -362,7 +412,7 @@ func (s *Service) markDeliveryFailure(ctx context.Context, item QueueItem, deliv
 		s.metrics.IncFailed()
 	}
 
-	if item.RetryCount < s.config.RetryCount && item.Status != QueueStatusPermanentlyFailed {
+	if item.RetryCount < s.retryCount && item.Status != QueueStatusPermanentlyFailed {
 		nextAttempt := time.Now().UTC().Add(retryDelay(s.config.Queue.RetryBaseDelay, item.RetryCount))
 		if err := s.webhooks.MarkFailed(ctx, item.ID, nextAttempt, deliveryErr.Error()); err != nil {
 			s.logger.Error("mark webhook queue item failed", zap.Error(err), zap.String("queue_id", item.ID))

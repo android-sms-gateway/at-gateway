@@ -2,6 +2,7 @@ package ping
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/android-sms-gateway/at-gateway/internal/webhooks"
@@ -16,20 +17,37 @@ import (
 // cannot interfere with delivery.
 type Service struct {
 	webhooksSvc *webhooks.Service
-	interval    time.Duration
+	settings    *Settings
 	logger      *zap.Logger
 }
 
-// NewService returns the system:ping ticker for the configured period.
-func NewService(config Config, webhooksSvc *webhooks.Service, logger *zap.Logger) *Service {
+// NewService returns the system:ping ticker driven by the module settings.
+func NewService(settings *Settings, webhooksSvc *webhooks.Service, logger *zap.Logger) *Service {
 	return &Service{
 		webhooksSvc: webhooksSvc,
-		interval:    config.Interval,
+		settings:    settings,
 		logger:      logger,
 	}
 }
 
-// Run emits a system:ping event on every tick until ctx is canceled and then
+// Run loads the stored interval once, at start - migrations have run by
+// then, and a settings write requires a restart to be applied - then drives
+// the ticker until ctx is canceled. A read failure aborts the app rather than
+// ticking on a default the API already confirmed as replaced; a shutdown that
+// interrupts the read stops cleanly with nil.
+func (s *Service) Run(ctx context.Context) error {
+	interval, err := s.settings.Interval(ctx)
+	if err != nil && ctx.Err() == nil {
+		return fmt.Errorf("load ping interval: %w", err)
+	}
+	if ctx.Err() == nil {
+		return s.tick(ctx, interval)
+	}
+
+	return nil
+}
+
+// tick emits a system:ping event on every tick until ctx is canceled and then
 // returns nil. A NON-POSITIVE interval is the documented opt-out: the ticker
 // returns immediately and no event is ever emitted.
 //
@@ -39,16 +57,16 @@ func NewService(config Config, webhooksSvc *webhooks.Service, logger *zap.Logger
 // The emission cadence is FIXED and independent of delivery outcomes: a slow or
 // failing endpoint makes the queue grow at exactly one item per interval, it
 // never accelerates the ticker. Retries belong to the queue worker, per item.
-func (s *Service) Run(ctx context.Context) error {
-	if s.interval <= 0 {
+func (s *Service) tick(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
 		// Info, not Debug: the disabled ticker is otherwise invisible, and the
 		// operator who set the opt-out needs to see it land. It fires once.
-		s.logger.Info("system ping emission disabled", zap.Duration("ping_interval", s.interval))
+		s.logger.Info("system ping emission disabled", zap.Duration("ping_interval", interval))
 
 		return nil
 	}
 
-	ticker := time.NewTicker(s.interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
