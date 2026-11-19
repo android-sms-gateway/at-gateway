@@ -321,8 +321,8 @@ func TestEnvExampleDocumentsPingIntervalWithDefault(t *testing.T) {
 	}
 
 	comment := commentBlockAbove(lines, index)
-	if !strings.Contains(comment, "default: "+documented) {
-		t.Errorf("%s comment block does not document (default: %s):\n%s", key, documented, comment)
+	if !strings.Contains(comment, "Default: "+documented) {
+		t.Errorf("%s comment block does not document (Default: %s):\n%s", key, documented, comment)
 	}
 
 	parsed, err := time.ParseDuration(documented)

@@ -10,7 +10,7 @@ A daemon that turns a serial AT-command modem (SIM800L class and similar) into a
 
 ## 📖 About
 
-The AT Gateway manages the full lifecycle of an AT-command modem connected over a serial port: it runs the boot init sequence, gates on SIM readiness, tracks connection state and signal quality, and exposes the device over a small HTTP API.
+The AT Gateway manages the full lifecycle of an AT-command modem connected over a serial port: it runs the boot init sequence, gates on SIM readiness, tracks connection state and signal quality, and exposes the modem's send and receive capabilities over an HTTP API — as a standalone gateway for private/local networks, with no cloud dependency.
 
 ## 📚 Table of Contents
 
@@ -29,12 +29,17 @@ The AT Gateway manages the full lifecycle of an AT-command modem connected over 
 
 ## ⭐ Features
 
-- AT-command modem bring-up: `AT`, `ATE0`, `+CMEE=1`, `+CMGF=1`, `+CNMI=2,1,0,0,0`, `+CPIN?` READY gate
-- Modem state machine with reconnect handling and per-command timeouts
+- AT-command modem bring-up: `AT`, `ATE0`, `+CMEE=1`, `+CMGF=0` (PDU), `+CNMI=2,1,0,1,0`, `+CPIN?` READY gate
+- Modem state machine with reconnect handling, per-command timeouts, and a retained-entry store sweep (`AT+CMGL=4`)
+- Outgoing SMS: persistent FIFO queue (`202 Accepted` + `Location`), automatic multi-part concatenation (GSM-7 / UCS-2), E.164 phone validation, `scheduleAt`/`validUntil` scheduling, cancellation
+- Delivery reports (`+CDS`) mapped to `sms:delivered` / `sms:failed` webhook events
+- Incoming SMS pipeline: `+CMTI` → `AT+CMGR` → inbox → `AT+CMGD`, multi-part reassembly, `GET /inbox` and `POST /inbox/refresh` webhook replay
+- Webhooks: registry API, HMAC-SHA256 signing (`X-Signature` + `X-Timestamp`), persistent queue with exponential retry; events `sms:sent`, `sms:delivered`, `sms:failed`, `sms:cancelled`, `sms:received`, `sms:data-received`, `app:started`, `system:ping`
 - Signal quality polling and Prometheus metrics (`/metrics`)
-- Automatic device registration with persisted local storage
+- Local device identity: a stable device ID minted on first boot and persisted in `data/storage.json`
 - Unified HTTP API with HTTP Basic auth and Swagger/OpenAPI docs
-- Health endpoints via go-core-fx (`/health`, `/health/live`, `/health/ready`)
+- Health endpoints via go-core-fx (`/health`, `/health/live`, `/health/ready`, `/health/startup`)
+- Settings API (`GET`/`PUT`/`PATCH /api/v1/settings`) for the ping interval and webhook retry count; written changes take effect after a gateway restart (a later read already shows the new values). The signing key is configured through the `WEBHOOKS__SIGNING_KEY` environment variable
 
 ## 📦 Prerequisites
 
@@ -54,58 +59,61 @@ The default command is `serve`; the HTTP API listens on `127.0.0.1:3000`.
 
 ## ⚙️ Configuration
 
-Configuration is loaded from environment variables (double-underscore nesting) or an optional YAML file via `CONFIG_PATH`.
+Configuration is loaded from an optional YAML file via `CONFIG_PATH`, a `.env` file in the working directory, and environment variables (double-underscore nesting), in that order; later sources win. A ping interval or webhook retry count saved through the Settings API takes precedence over these sources, including `WEBHOOKS__RETRY_COUNT`, and stays in effect after a restart.
 
-| Variable                 | Default             | Description                         |
-| ------------------------ | ------------------- | ----------------------------------- |
-| `HTTP__ADDRESS`          | `127.0.0.1:3000`    | HTTP API listen address             |
-| `HTTP__PROXY_HEADER`     | `X-Forwarded-For`   | Trusted proxy header                |
-| `HTTP__PROXIES`          | *(empty)*           | Comma-separated trusted proxies     |
-| `HTTP__OPENAPI__ENABLED` | `true`              | Enable Swagger UI at `/api/v1/docs` |
-| `MODEM__PORT`            | `/dev/ttyUSB0`      | Serial device of the modem          |
-| `MODEM__BAUD_RATE`       | `115200`            | Serial baud rate                    |
-| `MODEM__INIT_TIMEOUT`    | `30s`               | Modem init timeout                  |
-| `MODEM__COMMAND_TIMEOUT` | `10s`               | Per-command timeout                 |
-| `STORAGE__PATH`          | `data/storage.json` | Local JSON storage file             |
-| `AUTH__BASIC__USERNAME`  | `sms`               | Basic auth username                 |
-| `AUTH__BASIC__PASSWORD`  | *(required)*        | Basic auth password                 |
-| `DEVICE__NAME`           | *(empty)*           | Device display name                 |
-| `CONFIG_PATH`            | *(empty)*           | Optional YAML config file path      |
+| Variable                 | Default                                    | Description                                                                               |
+| ------------------------ | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `HTTP__ADDRESS`          | `127.0.0.1:3000`                           | HTTP API listen address                                                                   |
+| `HTTP__PROXY_HEADER`     | `X-Forwarded-For`                          | Trusted proxy header                                                                      |
+| `HTTP__PROXIES`          | *(empty)*                                  | Trusted proxies (JSON array, e.g. `["127.0.0.1"]`)                                        |
+| `HTTP__OPENAPI__ENABLED` | `true`                                     | Enable Swagger UI at `/api/v1/docs`                                                       |
+| `MODEM__PORT`            | `/dev/ttyUSB0`                             | Serial device of the modem                                                                |
+| `MODEM__BAUD_RATE`       | `115200`                                   | Serial baud rate                                                                          |
+| `MODEM__INIT_TIMEOUT`    | `30s`                                      | Modem init timeout                                                                        |
+| `MODEM__COMMAND_TIMEOUT` | `30s`                                      | Per-command timeout                                                                       |
+| `DATABASE__URL`          | `sqlite://data/gateway.db?_foreign_keys=1` | SQLite database (messages, inbox, webhooks, settings)                                     |
+| `STORAGE__PATH`          | `data/storage.json`                        | Local JSON storage file                                                                   |
+| `AUTH__BASIC__USERNAME`  | `sms`                                      | Basic auth username                                                                       |
+| `AUTH__BASIC__PASSWORD`  | *(auto-generated)*                         | Basic auth password (generated and persisted on first boot if unset)                      |
+| `DEVICE__NAME`           | *(empty)*                                  | Device display name                                                                       |
+| `CONFIG_PATH`            | *(empty)*                                  | Optional YAML config file path; must be a process environment variable, not set in `.env` |
 
-Full reference: [Custom Gateway Setup](https://docs.sms-gate.app/getting-started/custom-gateway/).
+Full reference: [.env.example](.env.example).
 
 ## 📦 Deployment
 
 ```bash
 docker run -d --name at-gateway \
   --device /dev/ttyUSB0 \
+  --group-add "$(stat -c '%g' /dev/ttyUSB0)" \
   -v /path/to/at-gateway-data:/app/data \
   -e MODEM__PORT=/dev/ttyUSB0 \
   -e HTTP__ADDRESS=0.0.0.0:3000 \
-  -e AUTH__BASIC__PASSWORD=change-me \
-  -p 3000:3000 \
+  -e AUTH__BASIC__PASSWORD=change-me-to-a-strong-password \
+  -p 127.0.0.1:3000:3000 \
   ghcr.io/android-sms-gateway/at-gateway:latest
 ```
 
-`/app/data` must be persisted (it holds the registered device ID in `data/storage.json`) and writable by UID 1000 (`appuser`), e.g. `chown 1000:1000 /path/to/at-gateway-data`.
+Replace `AUTH__BASIC__PASSWORD` with your own strong value (the default Basic-auth user is `sms`); `-p 127.0.0.1:3000:3000` keeps the API on localhost — publish `0.0.0.0:3000` only when you intentionally want other hosts to reach it.
+
+`/app/data` must be persisted (it holds the SQLite database `gateway.db`, the device identity in `storage.json`, and the auto-generated auth password — a password passed via `AUTH__BASIC__PASSWORD` is not stored here, so keep it in your environment) and writable by UID 1000 (`appuser`), e.g. `chown 1000:1000 /path/to/at-gateway-data`. `--group-add` grants the container user access to the serial device node, which is typically owned by `root:dialout` with mode `660`.
 
 ## 🔌 API Overview
 
-| Method | Path                    | Description                        |
-| ------ | ----------------------- | ---------------------------------- |
-| GET    | `/health`               | Health probes (`live`, `ready`)    |
-| GET    | `/metrics`              | Prometheus metrics                 |
-| GET    | `/api/v1`               | Service status                     |
-| GET    | `/api/v1/devices`       | Registered devices                 |
-| GET    | `/api/v1/messages`      | Message endpoints (scaffolded)     |
-| GET    | `/api/v1/inbox`         | Stored incoming messages           |
-| POST   | `/api/v1/inbox/refresh` | Replay stored messages as webhooks |
+| Method                        | Path                                                                      | Description                                                               |
+| ----------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| GET                           | `/health`, `/health/live`, `/health/ready`, `/health/startup`, `/metrics` | Health probes and Prometheus metrics (no auth)                            |
+| GET                           | `/api/v1/devices`                                                         | Local device and live SIM info                                            |
+| GET, POST, DELETE             | `/api/v1/messages`, `/api/v1/messages/{id}`                               | Enqueue (`202` + `Location`), list, fetch, cancel                         |
+| GET, POST                     | `/api/v1/inbox`, `/api/v1/inbox/refresh`                                  | Incoming messages and webhook replay (`DATA_SMS` rows are not replayable) |
+| GET, POST, DELETE             | `/api/v1/webhooks`, `/api/v1/webhooks/{id}`                               | Webhook registry                                                          |
+| GET, PUT, PATCH               | `/api/v1/settings`                                                        | Runtime settings                                                          |
 
-All `/api/v1` routes require HTTP Basic auth. Full reference: [OpenAPI docs](https://docs.sms-gate.app/).
+All `/api/v1` routes require HTTP Basic auth (user `sms` by default); interactive reference: Swagger UI at `/api/v1/docs`. Full reference: [OpenAPI docs](https://docs.sms-gate.app/).
 
 ## 📚 Documentation
 
-- [Custom Gateway Setup](https://docs.sms-gate.app/getting-started/custom-gateway/)
+- [Example Setups](docs/example-setups.md) — wiring schemes and hardware options
 - [Central docs](https://docs.sms-gate.app/)
 
 ## 🤝 Contributing
