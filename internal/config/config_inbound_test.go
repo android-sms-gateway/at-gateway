@@ -292,9 +292,9 @@ func TestEnvExampleDocumentsNewKeysWithDefaults(t *testing.T) {
 			}
 
 			comment := commentBlockAbove(lines, index)
-			if !strings.Contains(comment, "default: "+tt.documented) {
+			if !strings.Contains(comment, "Default: "+tt.documented) {
 				t.Errorf(
-					"%s comment block does not document (default: %s):\n%s",
+					"%s comment block does not document (Default: %s):\n%s",
 					tt.key,
 					tt.documented,
 					comment,
@@ -354,8 +354,8 @@ func TestEnvExampleDocumentsStoreKeys(t *testing.T) {
 	if got := strings.TrimSpace(strings.TrimPrefix(lines[sweepIndex], sweepKey+"=")); got != documented {
 		t.Errorf("%s = %q in .env.example, want %q", sweepKey, got, documented)
 	}
-	if comment := commentBlockAbove(lines, sweepIndex); !strings.Contains(comment, "default: "+documented) {
-		t.Errorf("%s comment block does not document (default: %s):\n%s", sweepKey, documented, comment)
+	if comment := commentBlockAbove(lines, sweepIndex); !strings.Contains(comment, "Default: "+documented) {
+		t.Errorf("%s comment block does not document (Default: %s):\n%s", sweepKey, documented, comment)
 	}
 
 	parsed, err := time.ParseDuration(documented)
